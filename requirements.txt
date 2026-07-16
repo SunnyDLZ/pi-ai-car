@@ -1,0 +1,6 @@
+# AI Car 依赖包
+# 使用 venv 安装: source .venv/bin/activate && pip install -r requirements.txt
+
+flask>=3.0
+numpy<2
+opencv-python-headless>=4.8

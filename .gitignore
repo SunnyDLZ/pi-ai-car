@@ -1,6 +1,22 @@
-*.pyc
+# Python
 __pycache__/
-*.mp4
-*.jpg
-*.wav
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# AI models (large, auto-downloaded)
+models/*.caffemodel
+models/*.prototxt
+
+# Logs
+*.log
