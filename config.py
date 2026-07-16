@@ -23,9 +23,11 @@ MOTOR2_RR_IN3 = 5    # 后右轮 IN3
 MOTOR2_RR_IN4 = 6    # 后右轮 IN4
 MOTOR2_RR_ENB = 26   # 后右轮 ENB (PWM)
 
-# 超声波 HY-SRF05
-ULTRASONIC_TRIG = 27
-ULTRASONIC_ECHO = 16
+# 超声波 HY-SRF05 (5针接口: 1=Vcc 2=Trig 3=Echo 4=OUT 5=GND)
+# 注意: 实际模块上的 Vcc 是 5V，Echo 输出也是 5V，需分压后接 GPIO
+ULTRASONIC_TRIG = 27   # ② Trig — 触发控制端 (GPIO.OUT)
+ULTRASONIC_ECHO = 16   # ③ Echo — 回响信号 (GPIO.IN，需 5V→3.3V 分压)
+# ULTRASONIC_OUT — ④ OUT 脚 (开关量输出，仅报警模式下使用，本系统未用)
 
 # 云台舵机 (Pigpio 硬件 PWM)
 SERVO_PAN_PIN = 20   # 水平 (左右)
@@ -55,13 +57,21 @@ MOTOR_SPEED_DEFAULT = 50  # 默认速度
 #   y: 前后 (+前)
 #   rotation: 旋转 (+顺时针)
 
-# ========== 超声波参数 ==========
+# ========== 超声波参数 (HY-SRF05 数据手册) ==========
 
-# HY-SRF05 技术参数
+# 声学参数
 SONIC_SPEED = 34300  # 声速 cm/s (20°C)
-MAX_DISTANCE = 400   # 最大量程 cm
-MIN_DISTANCE = 2     # 最小盲区 cm
-TIMEOUT_SEC = 0.025  # 超时 (对应 ~4m)
+MAX_DISTANCE = 450   # 最大量程 cm (手册标称 4.5m)
+MIN_DISTANCE = 2     # 最小盲区 cm (2cm)
+TIMEOUT_SEC = 0.027  # 超时 (对应 ~4.6m，略超最大量程)
+
+# 电气参数
+ULTRASONIC_VCC = 5       # 工作电压 5V DC
+ULTRASONIC_CURRENT = 15  # 工作电流 15mA
+ULTRASONIC_FREQ = 40     # 工作频率 40Hz
+ULTRASONIC_ANGLE = 15    # 测量角度 15°
+TRIG_PULSE_US = 10       # 触发脉冲宽度 10us
+MODULE_SIZE = "45mm × 20mm × 15mm"  # 模块尺寸
 
 # 避障阈值 (cm)
 OBSTACLE_WARN = 30    # 预警距离

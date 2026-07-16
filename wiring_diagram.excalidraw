@@ -118,10 +118,10 @@
      "strokeColor":"#1e1e1e","textAlign":"center","verticalAlign":"middle",
      "containerId":"bg_ultrasonic","originalText":"HY-SRF05 超声波模块","autoResize":true},
     {"type":"text","id":"ultrasonic_pins","x":900,"y":510,"width":320,"height":100,
-     "text":"TRIG=27 (GPIO.OUT) → 触发测距\nECHO=16 (GPIO.IN)  → 回响信号\n\n⚠ ECHO 输出 5V！必须用 1kΩ+2kΩ\n  分压电阻降到 3.3V 再接 GPIO 16",
+     "text":"① Vcc=5V  ② Trig=27(GPIO.OUT)\n③ Echo=16(GPIO.IN)  ⚠ 要分压\n④ OUT(报警用，本系统未接)\n⑤ GND\n\n量程 2cm~4.5m · 角度 15°\n工作电流 15mA · 频率 40Hz",
      "fontSize":16,"fontFamily":1,"strokeColor":"#495057","textAlign":"left",
      "verticalAlign":"top",
-     "originalText":"TRIG=27 (GPIO.OUT) → 触发测距\nECHO=16 (GPIO.IN)  → 回响信号\n\n⚠ ECHO 输出 5V！必须用 1kΩ+2kΩ\n  分压电阻降到 3.3V 再接 GPIO 16","autoResize":true},
+     "originalText":"① Vcc=5V  ② Trig=27(GPIO.OUT)\n③ Echo=16(GPIO.IN)  ⚠ 要分压\n④ OUT(报警用，本系统未接)\n⑤ GND\n\n量程 2cm~4.5m · 角度 15°\n工作电流 15mA · 频率 40Hz","autoResize":true},
 
     {"type":"rectangle","id":"bg_servo","x":1280,"y":450,"width":340,"height":180,
      "roundness":{"type":3},"backgroundColor":"#d0bfff","fillStyle":"solid",
