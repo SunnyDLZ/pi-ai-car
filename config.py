@@ -111,7 +111,7 @@ DETECTION_CONFIDENCE = 0.5
 MOBILENET_PROTOTXT = "models/MobileNetSSD_deploy.prototxt"
 MOBILENET_MODEL = "models/MobileNetSSD_deploy.caffemodel"
 
-# COCO 类别标签
+# VOC 类别标签 (MobileNet SSD 基于 PASCAL VOC 20 类 + background)
 COCO_CLASSES = [
     "background", "aeroplane", "bicycle", "bird", "boat",
     "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",

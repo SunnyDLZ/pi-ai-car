@@ -2,7 +2,7 @@
 """AI 小车 - 摄像头录像模块"""
 
 import subprocess
-import os
+
 
 def record_video(filename="video.mp4", duration=10):
     """录制一段视频（带音频）"""

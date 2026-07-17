@@ -18,19 +18,33 @@ class VoiceOutput:
 
     def init(self):
         """检查 TTS 引擎"""
+        self._tts_engine = None
         # 检查 espeak 是否可用
         try:
-            subprocess.run(["espeak", "--version"],
-                         capture_output=True, timeout=5)
-            self._tts_engine = "espeak"
-            print("[Voice] TTS 引擎: espeak")
+            result = subprocess.run(["espeak", "--version"],
+                                    capture_output=True, timeout=5)
+            if result.returncode == 0:
+                self._tts_engine = "espeak"
+                print("[Voice] TTS 引擎: espeak")
+            else:
+                print("[Voice] espeak 存在但返回异常，TTS 不可用")
         except FileNotFoundError:
             # 尝试安装 espeak
-            print("[Voice] 安装 espeak...")
-            os.system("sudo apt install -y espeak espeak-data 2>/dev/null")
-            self._tts_engine = "espeak"
+            print("[Voice] espeak 未安装，尝试安装...")
+            ret = os.system("sudo apt install -y espeak espeak-data 2>/dev/null")
+            # 验证安装是否成功
+            try:
+                result = subprocess.run(["espeak", "--version"],
+                                        capture_output=True, timeout=5)
+                if result.returncode == 0:
+                    self._tts_engine = "espeak"
+                    print("[Voice] espeak 安装成功")
+                else:
+                    print("[Voice] espeak 安装失败，TTS 不可用")
+            except FileNotFoundError:
+                print("[Voice] espeak 安装失败，TTS 不可用")
 
-        return True
+        return self._tts_engine is not None
 
     def say(self, text, lang="zh"):
         """TTS 朗读文本
@@ -39,6 +53,9 @@ class VoiceOutput:
             text: 要朗读的文字
             lang: 语言 (zh=中文, en=英文)
         """
+        if not self._tts_engine:
+            return
+
         self._speaking = True
 
         if self._tts_engine == "espeak":
@@ -66,6 +83,8 @@ class VoiceOutput:
 
     def say_wait(self, text, lang="zh"):
         """朗读并等待完成"""
+        if not self._tts_engine:
+            return
         self.say(text, lang)
         import time
         time.sleep(len(text) * 0.1 + 1)

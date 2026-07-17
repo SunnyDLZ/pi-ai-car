@@ -23,13 +23,15 @@ class WebServer:
 
     def __init__(self, motor: MotorController, servo: ServoGimbal,
                  camera_csi=None, camera_usb=None,
-                 ultrasonic=None, vision=None):
+                 ultrasonic=None, vision=None,
+                 on_mode_change=None):
         self._motor = motor
         self._servo = servo
         self._camera_csi = camera_csi
         self._camera_usb = camera_usb
         self._ultrasonic = ultrasonic
         self._vision = vision
+        self._on_mode_change = on_mode_change  # 回调: 通知 AICar 模式变更
 
         self._app = Flask(__name__)
 
@@ -39,8 +41,9 @@ class WebServer:
         # 当前摄像头源: "csi" 或 "usb"
         self._cam_source = "csi"
 
-        # 最新帧 (for MJPEG stream)
+        # 最新帧 (for MJPEG stream + 检测复用)
         self._latest_frame = None
+        self._latest_detections = []
         self._frame_lock = threading.Lock()
 
         # 注册路由
@@ -94,6 +97,9 @@ class WebServer:
             mode = data.get("mode", "manual")
             if mode in ("manual", "auto", "voice"):
                 self._mode = mode
+                # 通知 AICar 切换模式
+                if self._on_mode_change:
+                    self._on_mode_change(mode)
                 return jsonify({"status": "ok", "mode": mode})
             return jsonify({"status": "error", "msg": "无效模式"}), 400
 
@@ -112,16 +118,11 @@ class WebServer:
 
         @app.route("/api/detect")
         def api_detect():
-            """对当前帧做物体检测"""
+            """返回最近一次缓存的检测结果 (避免重复推理)"""
             if not self._vision:
                 return jsonify({"detections": []})
-
-            frame = self._latest_frame
-            if frame is None:
-                return jsonify({"detections": []})
-
-            detections = self._vision.detect(frame)
-            return jsonify({"detections": detections})
+            with self._frame_lock:
+                return jsonify({"detections": self._latest_detections})
 
         @app.route("/video_feed")
         def video_feed():
@@ -148,9 +149,11 @@ class WebServer:
                 with self._frame_lock:
                     self._latest_frame = frame.copy()
 
-                # 可选: 如果 AI 视觉开启且检测到目标, 绘制框
+                # 可选: 如果 AI 视觉开启且检测到目标, 绘制框 (结果缓存供 API 复用)
                 if self._vision and self._mode == "auto":
                     detections = self._vision.detect(frame)
+                    with self._frame_lock:
+                        self._latest_detections = detections
                     if detections:
                         frame = self._vision.draw_detections(frame, detections)
 
@@ -315,13 +318,13 @@ HTML_TEMPLATE = '''
     <div class="joystick-area">
       <div class="joystick-grid">
         <div></div>
-        <button data-dir="forward" ontouchstart="moveCar(0,-100,0)" ontouchend="stopCar()">▲</button>
+        <button data-dir="forward" ontouchstart="moveCar(0,-100,0)" ontouchend="stopCar()" onmousedown="moveCar(0,-100,0)" onmouseup="stopCar()">▲</button>
         <div></div>
-        <button data-dir="left" ontouchstart="moveCar(-100,0,0)" ontouchend="stopCar()">◀</button>
+        <button data-dir="left" ontouchstart="moveCar(-100,0,0)" ontouchend="stopCar()" onmousedown="moveCar(-100,0,0)" onmouseup="stopCar()">◀</button>
         <button class="center-btn" onclick="stopCar()">●</button>
-        <button data-dir="right" ontouchstart="moveCar(100,0,0)" ontouchend="stopCar()">▶</button>
+        <button data-dir="right" ontouchstart="moveCar(100,0,0)" ontouchend="stopCar()" onmousedown="moveCar(100,0,0)" onmouseup="stopCar()">▶</button>
         <div></div>
-        <button data-dir="backward" ontouchstart="moveCar(0,100,0)" ontouchend="stopCar()">▼</button>
+        <button data-dir="backward" ontouchstart="moveCar(0,100,0)" ontouchend="stopCar()" onmousedown="moveCar(0,100,0)" onmouseup="stopCar()">▼</button>
         <div></div>
       </div>
     </div>
@@ -329,8 +332,8 @@ HTML_TEMPLATE = '''
     <!-- 旋转 + 速度 -->
     <div class="side-controls">
       <div style="display:flex; gap:4px;">
-        <button class="btn-mode" ontouchstart="moveCar(0,0,-60)" ontouchend="stopCar()">⟳</button>
-        <button class="btn-mode" ontouchstart="moveCar(0,0,60)" ontouchend="stopCar()">⟳</button>
+        <button class="btn-mode" ontouchstart="moveCar(0,0,-60)" ontouchend="stopCar()" onmousedown="moveCar(0,0,-60)" onmouseup="stopCar()">⟳</button>
+        <button class="btn-mode" ontouchstart="moveCar(0,0,60)" ontouchend="stopCar()" onmousedown="moveCar(0,0,60)" onmouseup="stopCar()">⟳</button>
       </div>
       <div>
         <label>速度</label>
@@ -343,23 +346,23 @@ HTML_TEMPLATE = '''
     <!-- 云台控制 -->
     <div class="servo-controls">
       <div class="servo-row">
-        <button ontouchstart="servoPan(-10)" ontouchend="servoStop()">←</button>
+        <button ontouchstart="servoPan(-10)" ontouchend="servoStop()" onmousedown="servoPan(-10)" onmouseup="servoStop()">←</button>
         <span style="font-size:12px;color:#888;">云台</span>
-        <button ontouchstart="servoPan(10)" ontouchend="servoStop()">→</button>
+        <button ontouchstart="servoPan(10)" ontouchend="servoStop()" onmousedown="servoPan(10)" onmouseup="servoStop()">→</button>
       </div>
       <div class="servo-row">
-        <button ontouchstart="servoTilt(-10)" ontouchend="servoStop()">↑</button>
+        <button ontouchstart="servoTilt(-10)" ontouchend="servoStop()" onmousedown="servoTilt(-10)" onmouseup="servoStop()">↑</button>
         <span style="font-size:12px;color:#888;">俯仰</span>
-        <button ontouchstart="servoTilt(10)" ontouchend="servoStop()">↓</button>
+        <button ontouchstart="servoTilt(10)" ontouchend="servoStop()" onmousedown="servoTilt(10)" onmouseup="servoStop()">↓</button>
       </div>
       <button class="btn-mode" onclick="servoCenter()">归中</button>
     </div>
 
     <!-- 模式切换 -->
     <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center;">
-      <button class="btn-mode active" onclick="setMode('manual')">🕹 手动</button>
-      <button class="btn-mode" onclick="setMode('auto')">🤖 自动</button>
-      <button class="btn-mode" onclick="setMode('voice')">🎤 语音</button>
+      <button class="btn-mode active" onclick="setMode('manual', event)">🕹 手动</button>
+      <button class="btn-mode" onclick="setMode('auto', event)">🤖 自动</button>
+      <button class="btn-mode" onclick="setMode('voice', event)">🎤 语音</button>
     </div>
   </div>
 </div>
@@ -414,14 +417,14 @@ async function servoCenter() {
   });
 }
 
-async function setMode(mode) {
+async function setMode(mode, ev) {
   await fetch('/api/mode', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({mode})
   });
   document.querySelectorAll('.btn-mode[onclick*="setMode"]').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
+  if (ev && ev.target) ev.target.classList.add('active');
   const names = {manual: '🕹 手动', auto: '🤖 自动', voice: '🎤 语音'};
   document.getElementById('modeDisplay').textContent = names[mode] || mode;
 }

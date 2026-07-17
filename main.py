@@ -46,6 +46,7 @@ class AICar:
         self._running = False
         self._auto_mode = False
         self._mode = "manual"  # manual / auto / voice
+        self._mode_lock = threading.Lock()
 
         # 信号处理
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -114,6 +115,7 @@ class AICar:
             camera_usb=self.camera_usb,
             ultrasonic=self.ultrasonic,
             vision=self.vision,
+            on_mode_change=self.set_mode,
         )
         self.web.start()
 
@@ -123,9 +125,15 @@ class AICar:
         print(f"   🌐 打开浏览器访问本机 5000 端口")
         print("=" * 40)
 
+    def get_mode(self):
+        """获取当前模式 (线程安全)"""
+        with self._mode_lock:
+            return self._mode
+
     def set_mode(self, mode):
-        """切换运行模式"""
-        self._mode = mode
+        """切换运行模式 (线程安全，供 WebServer 回调调用)"""
+        with self._mode_lock:
+            self._mode = mode
         print(f"[Main] 切换到模式: {mode}")
         if mode == "voice":
             self.voice_out.say("语音模式已开启")
@@ -138,7 +146,7 @@ class AICar:
         """自动避障巡游模式"""
         print("[AutoPilot] 自动巡游启动")
         while self._running:
-            if self._mode != "auto":
+            if self.get_mode() != "auto":
                 self.motor.stop()
                 time.sleep(0.5)
                 continue
@@ -151,20 +159,24 @@ class AICar:
 
             print(f"[AutoPilot] 前方 {dist:.0f} cm")
 
+            # 保存用户速度，自动巡航用固定速度，退出后恢复
+            user_speed = self.motor.get_speed()
             if dist < OBSTACLE_STOP:
                 # 太近了 → 急停 + 后退 + 转向
                 self.motor.stop()
                 self.voice_out.say("前方障碍", lang="zh")
-                self.motor.backward(speed=40)
+                self.motor.move(y=-40)
                 time.sleep(0.5)
-                self.motor.rotate_right(speed=50)
+                self.motor.move(rotation=50)
                 time.sleep(0.3)
             elif dist < OBSTACLE_WARN:
                 # 警告距离 → 减速 + 偏向
                 self.motor.move(y=50, rotation=30)
             else:
                 # 安全 → 前进
-                self.motor.forward(speed=40)
+                self.motor.move(y=40)
+            # 恢复用户速度
+            self.motor.set_speed(user_speed)
 
             time.sleep(0.2)
 
@@ -174,7 +186,7 @@ class AICar:
         self.voice_out.say("你好，请说出指令")
 
         while self._running:
-            if self._mode != "voice":
+            if self.get_mode() != "voice":
                 time.sleep(0.5)
                 continue
 
@@ -264,8 +276,13 @@ class AICar:
         self.ultrasonic.cleanup()
         self.camera_csi.cleanup()
         self.camera_usb.cleanup()
-        self.voice_out.say("小车已关机")
-        time.sleep(0.5)
+        # 仅在语音输出已初始化时才播报
+        try:
+            if self.voice_out._tts_engine:
+                self.voice_out.say("小车已关机")
+                time.sleep(0.5)
+        except Exception:
+            pass
         print("[Main] 系统已安全关闭 ✅")
 
 

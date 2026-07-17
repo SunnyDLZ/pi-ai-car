@@ -27,13 +27,7 @@ class ServoGimbal:
         if not self._pi.connected:
             raise RuntimeError("[Servo] 无法连接到 pigpio 守护进程！请先启动: sudo pigpiod")
 
-        # 设置 PWM 频率为 50Hz (舵机标准)
-        self._pi.set_PWM_frequency(SERVO_PAN_PIN, 50)
-        self._pi.set_PWM_frequency(SERVO_TILT_PIN, 50)
-
-        # 设置 PWM 范围 (0-10000, 精度 0.1us)
-        self._pi.set_PWM_range(SERVO_PAN_PIN, 20000)   # 20000 * 0.1us = 2ms
-        self._pi.set_PWM_range(SERVO_TILT_PIN, 20000)
+        # set_servo_pulsewidth 内部自行管理 PWM，无需手动设置 range/frequency
 
         # 归中
         self.pan(SERVO_PAN_CENTER)
@@ -55,8 +49,8 @@ class ServoGimbal:
         # 线性映射: 角度 → 脉宽 (us)
         pulse_us = 500 + (angle / 180.0) * 2000  # 500~2500us
 
-        # 转为 pigpio 的单位 (0.1us)
-        return int(pulse_us * 10)
+        # set_servo_pulsewidth 接收微秒 (us)，无需转换
+        return int(pulse_us)
 
     def pan(self, angle):
         """设置水平角度 (度)

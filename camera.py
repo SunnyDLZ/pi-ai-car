@@ -6,6 +6,7 @@ USB 摄像头: OpenCV (通用)
 """
 
 import threading
+import time
 import numpy as np
 from config import CSI_FRAME_WIDTH, CSI_FRAME_HEIGHT, CSI_FRAME_RATE, \
     USB_FRAME_WIDTH, USB_FRAME_HEIGHT, USB_CAMERA_ID

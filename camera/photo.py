@@ -2,7 +2,7 @@
 """AI 小车 - 摄像头拍照模块"""
 
 import subprocess
-import os
+
 
 def take_photo(filename="photo.jpg", resolution="1920x1080"):
     """用 USB 摄像头拍照"""
