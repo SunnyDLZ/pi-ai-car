@@ -15,6 +15,7 @@ class VoiceOutput:
 
     def __init__(self):
         self._speaking = False
+        self._tts_engine = None
 
     def init(self):
         """检查 TTS 引擎"""
