@@ -11,7 +11,7 @@ main.py - AI 小车主程序入口
 
 使用方式:
   python3 main.py
-  # 然后浏览器访问 http://<树莓派IP>:5000
+  # 然后浏览器访问 http://<树莓派IP>:2222
 """
 
 import signal
@@ -26,7 +26,7 @@ from camera import CSICamera, USBCamera
 from voice import VoiceOutput, VoiceInput
 from ai_vision import AIVision
 from web_server import WebServer
-from config import OBSTACLE_WARN, OBSTACLE_STOP
+from config import OBSTACLE_WARN, OBSTACLE_STOP, WEB_PORT
 
 
 class AICar:
@@ -122,7 +122,7 @@ class AICar:
         self._running = True
         print("=" * 40)
         print("   ✅ 所有模块初始化完成！")
-        print(f"   🌐 打开浏览器访问本机 5000 端口")
+        print(f"   🌐 打开浏览器访问本机 {WEB_PORT} 端口")
         print("=" * 40)
 
     def get_mode(self):
@@ -144,10 +144,13 @@ class AICar:
 
     def _auto_pilot_loop(self):
         """自动避障巡游模式"""
-        # 电机未初始化 (如硬件未接/无 GPIO 权限) 时，自动巡游无意义，
+        # 电机或超声波未初始化 (如硬件未接/无 GPIO 权限) 时，自动巡游无意义，
         # 直接退出避免对未初始化的 GPIO 操作导致崩溃。
         if not getattr(self.motor, "_initialized", False):
             print("[AutoPilot] 电机未初始化，跳过自动巡游线程")
+            return
+        if not getattr(self.ultrasonic, "_initialized", False):
+            print("[AutoPilot] 超声波未初始化，跳过自动巡游线程")
             return
 
         print("[AutoPilot] 自动巡游启动")
@@ -256,7 +259,7 @@ class AICar:
         voice_thread.start()
 
         print("\n💡 使用提示:")
-        print("   浏览器打开 http://<树莓派IP>:5000 进入控制台")
+        print(f"   浏览器打开 http://<树莓派IP>:{WEB_PORT} 进入控制台")
         print("   按 Ctrl+C 安全退出")
 
         # 主线程保持运行
