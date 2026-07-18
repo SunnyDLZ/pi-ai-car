@@ -1,8 +1,8 @@
 """
 web_server.py - Web 遥控服务器
 
-Flask + 移动端友好的控制界面
-功能: 方向盘、云台、实时画面、AI 视觉、模式切换
+Flask + 手机横屏双手控制界面
+功能: 8方向全向移动、原地旋转、滑块调速、云台控制、实时画面、AI 视觉、模式切换
 """
 
 import json
@@ -31,22 +31,17 @@ class WebServer:
         self._camera_usb = camera_usb
         self._ultrasonic = ultrasonic
         self._vision = vision
-        self._on_mode_change = on_mode_change  # 回调: 通知 AICar 模式变更
+        self._on_mode_change = on_mode_change
 
         self._app = Flask(__name__)
 
-        # 运行模式: manual / auto / voice
         self._mode = "manual"
-
-        # 当前摄像头源: "csi" 或 "usb"
         self._cam_source = "csi"
 
-        # 最新帧 (for MJPEG stream + 检测复用)
         self._latest_frame = None
         self._latest_detections = []
         self._frame_lock = threading.Lock()
 
-        # 注册路由
         self._register_routes()
 
     def _register_routes(self):
@@ -97,7 +92,6 @@ class WebServer:
             mode = data.get("mode", "manual")
             if mode in ("manual", "auto", "voice"):
                 self._mode = mode
-                # 通知 AICar 切换模式
                 if self._on_mode_change:
                     self._on_mode_change(mode)
                 return jsonify({"status": "ok", "mode": mode})
@@ -118,11 +112,24 @@ class WebServer:
 
         @app.route("/api/detect")
         def api_detect():
-            """返回最近一次缓存的检测结果 (避免重复推理)"""
             if not self._vision:
                 return jsonify({"detections": []})
             with self._frame_lock:
                 return jsonify({"detections": self._latest_detections})
+
+        @app.route("/api/status")
+        def api_status():
+            """综合状态接口，减少前端轮询次数"""
+            dist = -1
+            if self._ultrasonic:
+                d = self._ultrasonic.measure()
+                dist = round(d, 1) if d > 0 else -1
+            return jsonify({
+                "mode": self._mode,
+                "distance": dist,
+                "speed": self._motor.get_speed(),
+                "camera": self._cam_source
+            })
 
         @app.route("/video_feed")
         def video_feed():
@@ -132,7 +139,6 @@ class WebServer:
             )
 
     def _get_current_frame(self):
-        """获取当前摄像头帧"""
         if self._cam_source == "csi" and self._camera_csi:
             return self._camera_csi.capture()
         elif self._cam_source == "usb" and self._camera_usb:
@@ -140,16 +146,13 @@ class WebServer:
         return None
 
     def _generate_frames(self):
-        """MJPEG 视频流生成器"""
         import cv2
         while True:
             frame = self._get_current_frame()
             if frame is not None:
-                # 保存最新帧供检测使用
                 with self._frame_lock:
                     self._latest_frame = frame.copy()
 
-                # 可选: 如果 AI 视觉开启且检测到目标, 绘制框 (结果缓存供 API 复用)
                 if self._vision and self._mode == "auto":
                     detections = self._vision.detect(frame)
                     with self._frame_lock:
@@ -157,13 +160,11 @@ class WebServer:
                     if detections:
                         frame = self._vision.draw_detections(frame, detections)
 
-                # 编码为 JPEG
                 _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' +
                        jpeg.tobytes() + b'\r\n')
             else:
-                # 无画面时显示等待帧
                 blank = np.zeros((240, 320, 3), dtype=np.uint8)
                 _, jpeg = cv2.imencode('.jpg', blank)
                 yield (b'--frame\r\n'
@@ -173,7 +174,6 @@ class WebServer:
             time.sleep(0.05)
 
     def start(self, threaded=True):
-        """启动 Web 服务器 (非阻塞)"""
         threading.Thread(
             target=lambda: self._app.run(
                 host=WEB_HOST, port=WEB_PORT,
@@ -186,271 +186,499 @@ class WebServer:
 
 
 # ============================================================
-# HTML 控制界面 (移动端自适应)
+# HTML 控制界面 (手机横屏双手控制)
 # ============================================================
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
+HTML_TEMPLATE = '''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>AI 小车控制台</title>
 <style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body {
-    font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
-    background: #1a1a2e; color: #eee;
-    overflow-x: hidden; height: 100vh;
-  }
-  .container {
-    display: grid;
-    grid-template-columns: 1fr 280px 1fr;
-    grid-template-rows: 60px 1fr 120px;
-    gap: 10px; padding: 10px;
-    height: 100vh; max-width: 100vw;
-  }
-  .header {
-    grid-column: 1/-1;
-    display: flex; align-items: center; justify-content: space-between;
-    background: #16213e; border-radius: 12px; padding: 0 20px;
-  }
-  .header h1 { font-size: 18px; }
-  .header .status { font-size: 13px; color: #0f0; }
-  .camera-panel {
-    grid-column: 1/-1;
-    background: #000; border-radius: 12px; overflow: hidden;
-    position: relative; min-height: 0;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .camera-panel img {
-    width: 100%; height: 100%; object-fit: contain;
-  }
-  .camera-overlay {
-    position: absolute; bottom: 10px; left: 10px; right: 10px;
-    display: flex; justify-content: space-between;
-  }
-  .control-area {
-    grid-column: 1/-1;
-    display: flex; gap: 10px; align-items: center; justify-content: center;
-  }
-  .joystick-area {
-    display: flex; flex-direction: column; align-items: center; gap: 4px;
-  }
-  .joystick-grid {
-    display: grid;
-    grid-template-columns: 60px 60px 60px;
-    grid-template-rows: 60px 60px 60px;
-    gap: 3px;
-  }
-  .joystick-grid button {
-    width: 60px; height: 60px;
-    border: none; border-radius: 12px;
-    font-size: 22px; cursor: pointer;
-    background: #16213e; color: #0f3460;
-    transition: all 0.1s; touch-action: manipulation;
-    -webkit-tap-highlight-color: transparent;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .joystick-grid button:active {
-    background: #e94560; color: #fff; transform: scale(0.92);
-  }
-  .joystick-grid .center-btn {
-    background: #0f3460; color: #e94560; font-size: 28px;
-  }
-  .side-controls {
-    display: flex; flex-direction: column; gap: 8px; align-items: center;
-  }
-  .side-controls label { font-size: 12px; color: #888; text-align: center; }
-  .side-controls input[type=range] {
-    width: 100px; height: 4px; -webkit-appearance: none;
-    background: #0f3460; border-radius: 2px; outline: none;
-  }
-  .side-controls input[type=range]::-webkit-slider-thumb {
-    -webkit-appearance: none; width: 20px; height: 20px;
-    border-radius: 50%; background: #e94560; cursor: pointer;
-  }
-  .servo-controls {
-    display: flex; gap: 8px; flex-direction: column; align-items: center;
-  }
-  .servo-row { display: flex; gap: 4px; align-items: center; }
-  .servo-row button {
-    width: 36px; height: 36px; border: none; border-radius: 8px;
-    background: #16213e; color: #e94560; font-size: 16px; cursor: pointer;
-  }
-  .servo-row button:active { background: #e94560; color: #fff; }
-  .btn-mode { padding: 6px 14px; border-radius: 20px; border: 1px solid #0f3460;
-    background: transparent; color: #eee; font-size: 13px; cursor: pointer; }
-  .btn-mode.active { background: #e94560; border-color: #e94560; }
-  .distance-badge {
-    background: #16213e; padding: 4px 12px; border-radius: 20px;
-    font-size: 13px; color: #0f0;
-  }
-  @media (min-width: 768px) {
-    .container {
-      grid-template-columns: 1fr 400px 250px;
-      grid-template-rows: 60px 1fr;
-    }
-    .camera-panel { grid-column: 2; grid-row: 2; }
-    .control-area { grid-column: 3; grid-row: 2; flex-direction: column; }
-  }
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+:root {
+  --bg: #0d0d1a; --panel: #16213e; --accent: #e94560;
+  --accent2: #0f3460; --text: #eee; --green: #00e676;
+  --btn: #1a1a3e; --btn-active: #e94560; --radius: 14px;
+}
+html, body {
+  width:100%; height:100%; overflow:hidden;
+  font-family:-apple-system,'Segoe UI',Roboto,sans-serif;
+  background:var(--bg); color:var(--text);
+  touch-action:none; user-select:none; -webkit-user-select:none;
+}
+
+/* ===== 竖屏旋转提示 ===== */
+#rotate-hint {
+  display:none; position:fixed; inset:0; z-index:9999;
+  background:var(--bg); flex-direction:column;
+  align-items:center; justify-content:center; text-align:center;
+}
+#rotate-hint .icon { font-size:64px; animation:rotate 2s ease-in-out infinite; }
+#rotate-hint p { margin-top:16px; font-size:18px; color:var(--text); }
+@keyframes rotate { 0%,100%{transform:rotate(0)} 50%{transform:rotate(90deg)} }
+@media (orientation:portrait) {
+  #rotate-hint { display:flex; }
+  #main-app { display:none; }
+}
+
+/* ===== 主布局: 横屏三栏 ===== */
+#main-app {
+  display:grid;
+  grid-template-columns: 210px 1fr 200px;
+  grid-template-rows: 44px 1fr;
+  width:100%; height:100%;
+  gap:6px; padding:6px;
+}
+
+/* ===== 顶栏 ===== */
+.topbar {
+  grid-column:1/-1;
+  display:flex; align-items:center; justify-content:space-between;
+  background:var(--panel); border-radius:10px; padding:0 12px;
+  font-size:13px;
+}
+.topbar-left { display:flex; align-items:center; gap:10px; }
+.topbar-right { display:flex; align-items:center; gap:8px; }
+.dist-badge {
+  background:var(--accent2); padding:3px 10px; border-radius:16px;
+  font-size:12px; color:var(--green); white-space:nowrap;
+}
+.dist-badge.warn { color:#ffb74d; }
+.dist-badge.danger { color:var(--accent); animation:pulse 0.5s infinite; }
+@keyframes pulse { 50% { opacity:0.5; } }
+
+/* ===== 左栏: 方向控制 (左手) ===== */
+.left-panel {
+  display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:8px;
+  background:var(--panel); border-radius:var(--radius); padding:8px;
+}
+
+/* 8方向 D-Pad */
+.dpad {
+  display:grid;
+  grid-template-columns: repeat(3, 56px);
+  grid-template-rows: repeat(3, 56px);
+  gap:4px;
+}
+.dpad button {
+  width:56px; height:56px; border:none; border-radius:12px;
+  background:var(--btn); color:var(--text); font-size:24px;
+  cursor:pointer; transition:all 0.08s; touch-action:manipulation;
+  display:flex; align-items:center; justify-content:center;
+  border:1px solid rgba(255,255,255,0.05);
+}
+.dpad button:active, .dpad button.active {
+  background:var(--btn-active); color:#fff; transform:scale(0.9);
+  box-shadow:0 0 12px rgba(233,69,96,0.5);
+}
+.dpad .stop-btn {
+  background:var(--accent2); color:var(--accent); font-size:20px;
+  border:1px solid var(--accent);
+}
+.dpad .stop-btn:active, .dpad .stop-btn.active {
+  background:var(--accent); color:#fff;
+}
+
+.dpad-label {
+  font-size:11px; color:#666; text-align:center; margin-top:2px;
+}
+
+/* ===== 中栏: 摄像头画面 ===== */
+.center-panel {
+  background:#000; border-radius:var(--radius); overflow:hidden;
+  position:relative; min-height:0; min-width:0;
+  display:flex; align-items:center; justify-content:center;
+}
+.center-panel img {
+  width:100%; height:100%; object-fit:contain;
+}
+.cam-overlay-top {
+  position:absolute; top:6px; left:6px; right:6px;
+  display:flex; justify-content:space-between; pointer-events:none;
+}
+.cam-overlay-bottom {
+  position:absolute; bottom:6px; left:50%; transform:translateX(-50%);
+  display:flex; gap:6px;
+}
+.cam-btn {
+  background:rgba(22,33,62,0.85); border:1px solid var(--accent2);
+  color:var(--text); padding:4px 12px; border-radius:16px;
+  font-size:12px; cursor:pointer; backdrop-filter:blur(4px);
+  pointer-events:auto; transition:all 0.15s;
+}
+.cam-btn.active { background:var(--accent); border-color:var(--accent); }
+
+/* ===== 右栏: 功能控制 (右手) ===== */
+.right-panel {
+  display:flex; flex-direction:column; gap:6px;
+  background:var(--panel); border-radius:var(--radius); padding:8px;
+  overflow-y:auto;
+}
+
+/* 旋转控制 */
+.section-label {
+  font-size:10px; color:#555; text-transform:uppercase;
+  letter-spacing:1px; text-align:center; margin-bottom:2px;
+}
+.rotate-row {
+  display:flex; gap:6px; justify-content:center;
+}
+.rotate-btn {
+  width:72px; height:48px; border:none; border-radius:10px;
+  background:var(--btn); color:var(--text); font-size:13px;
+  cursor:pointer; transition:all 0.08s; touch-action:manipulation;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:2px; border:1px solid rgba(255,255,255,0.05);
+}
+.rotate-btn .icon { font-size:20px; }
+.rotate-btn:active, .rotate-btn.active {
+  background:var(--btn-active); transform:scale(0.92);
+  box-shadow:0 0 10px rgba(233,69,96,0.4);
+}
+
+/* 速度滑块 */
+.speed-section {
+  display:flex; flex-direction:column; align-items:center; gap:4px;
+}
+.speed-row {
+  display:flex; align-items:center; gap:8px; width:100%;
+}
+.speed-slider {
+  flex:1; -webkit-appearance:none; appearance:none;
+  height:8px; border-radius:4px; outline:none;
+  background:linear-gradient(to right, var(--accent2), var(--accent));
+}
+.speed-slider::-webkit-slider-thumb {
+  -webkit-appearance:none; width:26px; height:26px;
+  border-radius:50%; background:#fff; cursor:pointer;
+  box-shadow:0 2px 6px rgba(0,0,0,0.4); border:2px solid var(--accent);
+}
+.speed-slider::-moz-range-thumb {
+  width:26px; height:26px; border-radius:50%; background:#fff;
+  cursor:pointer; border:2px solid var(--accent);
+}
+.speed-value {
+  min-width:36px; text-align:center; font-size:15px; font-weight:bold;
+  color:var(--accent);
+}
+.speed-label { font-size:10px; color:#555; }
+
+/* 云台控制 */
+.gimbal-grid {
+  display:grid; grid-template-columns:repeat(3,40px); grid-template-rows:repeat(3,40px);
+  gap:3px; justify-content:center; margin:0 auto;
+}
+.gimbal-grid button {
+  width:40px; height:40px; border:none; border-radius:8px;
+  background:var(--btn); color:var(--text); font-size:16px;
+  cursor:pointer; transition:all 0.08s; touch-action:manipulation;
+  display:flex; align-items:center; justify-content:center;
+  border:1px solid rgba(255,255,255,0.05);
+}
+.gimbal-grid button:active, .gimbal-grid button.active {
+  background:var(--accent2); color:var(--accent); transform:scale(0.9);
+}
+.gimbal-grid .gimbal-center {
+  background:transparent; border:1px dashed #333; font-size:10px; color:#444;
+}
+.gimbal-grid .gimbal-center:active { transform:none; background:transparent; }
+
+/* 模式切换 */
+.mode-row {
+  display:flex; gap:4px; justify-content:center;
+}
+.mode-btn {
+  flex:1; padding:7px 4px; border:1px solid var(--accent2);
+  border-radius:8px; background:transparent; color:var(--text);
+  font-size:12px; cursor:pointer; transition:all 0.15s;
+  touch-action:manipulation;
+}
+.mode-btn.active {
+  background:var(--accent); border-color:var(--accent); color:#fff;
+  box-shadow:0 0 8px rgba(233,69,96,0.3);
+}
+
+/* 分隔线 */
+.divider {
+  width:100%; height:1px; background:rgba(255,255,255,0.06);
+  margin:2px 0;
+}
+
+/* 紧凑屏幕适配 */
+@media (max-height: 400px) {
+  .dpad { grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(3, 48px); }
+  .dpad button { width:48px; height:48px; font-size:20px; }
+  .rotate-btn { height:42px; }
+  .gimbal-grid { grid-template-columns:repeat(3,34px); grid-template-rows:repeat(3,34px); }
+  .gimbal-grid button { width:34px; height:34px; }
+}
+@media (max-height: 360px) {
+  #main-app { grid-template-columns: 185px 1fr 180px; }
+  .dpad { grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(3, 44px); }
+  .dpad button { width:44px; height:44px; font-size:18px; }
+}
 </style>
 </head>
 <body>
-<div class="container">
-  <div class="header">
-    <h1>🚗 AI 小车</h1>
-    <div>
-      <span class="distance-badge" id="distDisplay">📡 -- cm</span>
-      <span id="modeDisplay" class="btn-mode active">手动</span>
+
+<!-- 竖屏旋转提示 -->
+<div id="rotate-hint">
+  <div class="icon">📱↻</div>
+  <p>请横屏使用</p>
+</div>
+
+<!-- 主应用 -->
+<div id="main-app">
+
+  <!-- 顶栏 -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <span style="font-size:16px;">🚗</span>
+      <span style="font-weight:600;">AI 小车</span>
+      <span id="modeLabel" style="font-size:12px;color:var(--accent);">手动模式</span>
+    </div>
+    <div class="topbar-right">
+      <span class="dist-badge" id="distDisplay">📡 --</span>
     </div>
   </div>
 
-  <div class="camera-panel">
+  <!-- 左栏: 方向控制 (左手) -->
+  <div class="left-panel">
+    <div class="dpad-label">麦克纳姆轮 · 8方向</div>
+    <div class="dpad">
+      <button data-act="fl" ontouchstart="hold(-70,70,0,this)" ontouchend="release(this)" onmousedown="hold(-70,70,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↖</button>
+      <button data-act="f" ontouchstart="hold(0,100,0,this)" ontouchend="release(this)" onmousedown="hold(0,100,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↑</button>
+      <button data-act="fr" ontouchstart="hold(70,70,0,this)" ontouchend="release(this)" onmousedown="hold(70,70,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↗</button>
+      <button data-act="sl" ontouchstart="hold(-100,0,0,this)" ontouchend="release(this)" onmousedown="hold(-100,0,0,this)" onmouseup="release(this)" onmouseleave="release(this)">←</button>
+      <button class="stop-btn" onclick="stopCar(this)">⏹</button>
+      <button data-act="sr" ontouchstart="hold(100,0,0,this)" ontouchend="release(this)" onmousedown="hold(100,0,0,this)" onmouseup="release(this)" onmouseleave="release(this)">→</button>
+      <button data-act="bl" ontouchstart="hold(-70,-70,0,this)" ontouchend="release(this)" onmousedown="hold(-70,-70,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↙</button>
+      <button data-act="b" ontouchstart="hold(0,-100,0,this)" ontouchend="release(this)" onmousedown="hold(0,-100,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↓</button>
+      <button data-act="br" ontouchstart="hold(70,-70,0,this)" ontouchend="release(this)" onmousedown="hold(70,-70,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↘</button>
+    </div>
+  </div>
+
+  <!-- 中栏: 摄像头 -->
+  <div class="center-panel">
     <img id="cameraFeed" src="/video_feed" alt="摄像头画面">
-    <div class="camera-overlay">
-      <button class="btn-mode" onclick="switchCamera('csi')">CSI</button>
-      <button class="btn-mode" onclick="switchCamera('usb')">USB</button>
+    <div class="cam-overlay-top">
+      <span id="aiStatus" style="font-size:11px;color:var(--green);background:rgba(0,0,0,0.5);padding:2px 8px;border-radius:10px;">● LIVE</span>
+      <span></span>
+    </div>
+    <div class="cam-overlay-bottom">
+      <button class="cam-btn active" id="csiBtn" onclick="switchCamera('csi')">CSI</button>
+      <button class="cam-btn" id="usbBtn" onclick="switchCamera('usb')">USB</button>
     </div>
   </div>
 
-  <div class="control-area">
-    <!-- 方向控制 -->
-    <div class="joystick-area">
-      <div class="joystick-grid">
-        <div></div>
-        <button data-dir="forward" ontouchstart="moveCar(0,-100,0)" ontouchend="stopCar()" onmousedown="moveCar(0,-100,0)" onmouseup="stopCar()">▲</button>
-        <div></div>
-        <button data-dir="left" ontouchstart="moveCar(-100,0,0)" ontouchend="stopCar()" onmousedown="moveCar(-100,0,0)" onmouseup="stopCar()">◀</button>
-        <button class="center-btn" onclick="stopCar()">●</button>
-        <button data-dir="right" ontouchstart="moveCar(100,0,0)" ontouchend="stopCar()" onmousedown="moveCar(100,0,0)" onmouseup="stopCar()">▶</button>
-        <div></div>
-        <button data-dir="backward" ontouchstart="moveCar(0,100,0)" ontouchend="stopCar()" onmousedown="moveCar(0,100,0)" onmouseup="stopCar()">▼</button>
-        <div></div>
-      </div>
+  <!-- 右栏: 功能控制 (右手) -->
+  <div class="right-panel">
+
+    <!-- 旋转 -->
+    <div class="section-label">原地旋转</div>
+    <div class="rotate-row">
+      <button class="rotate-btn" ontouchstart="hold(0,0,-70,this)" ontouchend="release(this)" onmousedown="hold(0,0,-70,this)" onmouseup="release(this)" onmouseleave="release(this)">
+        <span class="icon">⟲</span>左转
+      </button>
+      <button class="rotate-btn" ontouchstart="hold(0,0,70,this)" ontouchend="release(this)" onmousedown="hold(0,0,70,this)" onmouseup="release(this)" onmouseleave="release(this)">
+        <span class="icon">⟳</span>右转
+      </button>
     </div>
 
-    <!-- 旋转 + 速度 -->
-    <div class="side-controls">
-      <div style="display:flex; gap:4px;">
-        <button class="btn-mode" ontouchstart="moveCar(0,0,-60)" ontouchend="stopCar()" onmousedown="moveCar(0,0,-60)" onmouseup="stopCar()">⟳</button>
-        <button class="btn-mode" ontouchstart="moveCar(0,0,60)" ontouchend="stopCar()" onmousedown="moveCar(0,0,60)" onmouseup="stopCar()">⟳</button>
-      </div>
-      <div>
-        <label>速度</label>
-        <input type="range" id="speedSlider" min="20" max="100" value="50"
+    <div class="divider"></div>
+
+    <!-- 速度 -->
+    <div class="speed-section">
+      <div class="speed-label">速度调节</div>
+      <div class="speed-row">
+        <span style="font-size:12px;color:#555;">慢</span>
+        <input type="range" class="speed-slider" id="speedSlider" min="20" max="100" value="50"
                oninput="updateSpeed(this.value)">
-        <span id="speedDisplay" style="font-size:13px;">50</span>
+        <span style="font-size:12px;color:#555;">快</span>
       </div>
+      <div class="speed-value" id="speedDisplay">50%</div>
     </div>
 
-    <!-- 云台控制 -->
-    <div class="servo-controls">
-      <div class="servo-row">
-        <button ontouchstart="servoPan(-10)" ontouchend="servoStop()" onmousedown="servoPan(-10)" onmouseup="servoStop()">←</button>
-        <span style="font-size:12px;color:#888;">云台</span>
-        <button ontouchstart="servoPan(10)" ontouchend="servoStop()" onmousedown="servoPan(10)" onmouseup="servoStop()">→</button>
-      </div>
-      <div class="servo-row">
-        <button ontouchstart="servoTilt(-10)" ontouchend="servoStop()" onmousedown="servoTilt(-10)" onmouseup="servoStop()">↑</button>
-        <span style="font-size:12px;color:#888;">俯仰</span>
-        <button ontouchstart="servoTilt(10)" ontouchend="servoStop()" onmousedown="servoTilt(10)" onmouseup="servoStop()">↓</button>
-      </div>
-      <button class="btn-mode" onclick="servoCenter()">归中</button>
+    <div class="divider"></div>
+
+    <!-- 云台 -->
+    <div class="section-label">云台控制</div>
+    <div class="gimbal-grid">
+      <div></div>
+      <button ontouchstart="gimbalTilt(-10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(-10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↑</button>
+      <div></div>
+      <button ontouchstart="gimbalPan(-10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalPan(-10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">←</button>
+      <button class="gimbal-center" onclick="gimbalCenter()">归中</button>
+      <button ontouchstart="gimbalPan(10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalPan(10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">→</button>
+      <div></div>
+      <button ontouchstart="gimbalTilt(10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↓</button>
+      <div></div>
     </div>
 
-    <!-- 模式切换 -->
-    <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center;">
-      <button class="btn-mode active" onclick="setMode('manual', event)">🕹 手动</button>
-      <button class="btn-mode" onclick="setMode('auto', event)">🤖 自动</button>
-      <button class="btn-mode" onclick="setMode('voice', event)">🎤 语音</button>
+    <div class="divider"></div>
+
+    <!-- 模式 -->
+    <div class="section-label">运行模式</div>
+    <div class="mode-row">
+      <button class="mode-btn active" id="modeManual" onclick="setMode('manual')">🕹手动</button>
+      <button class="mode-btn" id="modeAuto" onclick="setMode('auto')">🤖自动</button>
+      <button class="mode-btn" id="modeVoice" onclick="setMode('voice')">🎤语音</button>
     </div>
+
   </div>
 </div>
 
 <script>
 let speedValue = 50;
 let currentPan = 90, currentTilt = 90;
+let activeDir = null;  // 当前活跃方向按钮
 
-async function moveCar(x, y, r) {
-  await fetch('/api/control', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({x, y, rotation: r, speed: speedValue})
-  });
+// ===== 按住移动 =====
+async function hold(x, y, r, btn) {
+  btn.classList.add('active');
+  if (navigator.vibrate) navigator.vibrate(15);
+  activeDir = btn;
+  try {
+    await fetch('/api/control', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({x, y, rotation:r, speed:speedValue})
+    });
+  } catch(e) {}
 }
 
-function stopCar() {
-  fetch('/api/stop', {method: 'POST'});
+function release(btn) {
+  btn.classList.remove('active');
+  if (activeDir === btn) {
+    activeDir = null;
+    stopCar(null);
+  }
 }
 
+function stopCar(btn) {
+  if (btn) { btn.classList.add('active'); if(navigator.vibrate) navigator.vibrate(20); setTimeout(()=>btn.classList.remove('active'),200); }
+  fetch('/api/stop', {method:'POST'}).catch(()=>{});
+}
+
+// ===== 速度 =====
 function updateSpeed(val) {
-  speedValue = val;
-  document.getElementById('speedDisplay').textContent = val;
+  speedValue = parseInt(val);
+  document.getElementById('speedDisplay').textContent = val + '%';
+  fetch('/api/control', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({x:0, y:0, rotation:0, speed:speedValue})
+  }).catch(()=>{});
+  setTimeout(()=>{ fetch('/api/stop',{method:'POST'}); }, 100);
 }
 
-async function servoPan(delta) {
+// ===== 云台 =====
+async function gimbalPan(delta, btn) {
+  btn.classList.add('active');
+  if (navigator.vibrate) navigator.vibrate(10);
   currentPan = Math.max(0, Math.min(180, currentPan + delta));
   await fetch('/api/servo', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({pan: currentPan})
-  });
+  }).catch(()=>{});
 }
 
-async function servoTilt(delta) {
+async function gimbalTilt(delta, btn) {
+  btn.classList.add('active');
+  if (navigator.vibrate) navigator.vibrate(10);
   currentTilt = Math.max(0, Math.min(180, currentTilt + delta));
   await fetch('/api/servo', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({tilt: currentTilt})
-  });
+  }).catch(()=>{});
 }
 
-function servoStop() {}
+function gimbalRelease(btn) { btn.classList.remove('active'); }
 
-async function servoCenter() {
+async function gimbalCenter() {
   currentPan = 90; currentTilt = 90;
   await fetch('/api/servo', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({pan: 90, tilt: 90})
-  });
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({pan:90, tilt:90})
+  }).catch(()=>{});
 }
 
-async function setMode(mode, ev) {
+// ===== 模式 =====
+async function setMode(mode) {
   await fetch('/api/mode', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({mode})
-  });
-  document.querySelectorAll('.btn-mode[onclick*="setMode"]').forEach(b => b.classList.remove('active'));
-  if (ev && ev.target) ev.target.classList.add('active');
-  const names = {manual: '🕹 手动', auto: '🤖 自动', voice: '🎤 语音'};
-  document.getElementById('modeDisplay').textContent = names[mode] || mode;
+  }).catch(()=>{});
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('mode' + mode.charAt(0).toUpperCase() + mode.slice(1)).classList.add('active');
+  const names = {manual:'手动模式', auto:'自动模式', voice:'语音模式'};
+  document.getElementById('modeLabel').textContent = names[mode];
+  if (navigator.vibrate) navigator.vibrate(15);
 }
 
+// ===== 摄像头切换 =====
 async function switchCamera(source) {
   await fetch('/api/camera', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({source})
-  });
+  }).catch(()=>{});
+  document.getElementById('csiBtn').classList.toggle('active', source==='csi');
+  document.getElementById('usbBtn').classList.toggle('active', source==='usb');
 }
 
-// 实时更新超声波距离
+// ===== 距离轮询 =====
 async function updateDistance() {
   try {
     const r = await fetch('/api/distance');
     const d = await r.json();
-    document.getElementById('distDisplay').textContent =
-      d.distance > 0 ? `📡 ${d.distance} cm` : '📡 -- cm';
+    const el = document.getElementById('distDisplay');
+    if (d.distance > 0) {
+      el.textContent = '📡 ' + d.distance.toFixed(0) + 'cm';
+      el.className = 'dist-badge' + (d.distance < 15 ? ' danger' : d.distance < 30 ? ' warn' : '');
+    } else {
+      el.textContent = '📡 --';
+      el.className = 'dist-badge';
+    }
   } catch(e) {}
 }
-setInterval(updateDistance, 1000);
+setInterval(updateDistance, 800);
 
-// 防止触摸滚动
-document.addEventListener('touchmove', e => e.preventDefault(), {passive: false});
+// ===== 防止触摸滚动/缩放 =====
+document.addEventListener('touchmove', e => e.preventDefault(), {passive:false});
+document.addEventListener('gesturestart', e => e.preventDefault());
+document.addEventListener('dblclick', e => e.preventDefault());
+
+// ===== 键盘控制 (电脑端) =====
+const keyMap = {
+  'ArrowUp':[0,100,0], 'w':[0,100,0], 'W':[0,100,0],
+  'ArrowDown':[0,-100,0], 's':[0,-100,0], 'S':[0,-100,0],
+  'ArrowLeft':[-100,0,0], 'a':[-100,0,0], 'A':[-100,0,0],
+  'ArrowRight':[100,0,0], 'd':[100,0,0], 'D':[100,0,0],
+  'q':[-70,70,0], 'Q':[-70,70,0],     // 左前
+  'e':[70,70,0], 'E':[70,70,0],       // 右前
+  'z':[-70,-70,0], 'Z':[-70,-70,0],   // 左后
+  'x':[70,-70,0], 'X':[70,-70,0],     // 右后
+};
+const pressedKeys = new Set();
+document.addEventListener('keydown', e => {
+  if (pressedKeys.has(e.key)) return;
+  if (e.key in keyMap) {
+    e.preventDefault();
+    pressedKeys.add(e.key);
+    const [x,y,r] = keyMap[e.key];
+    fetch('/api/control', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({x,y,rotation:r,speed:speedValue})}).catch(()=>{});
+  }
+  if (e.key === ' ') { e.preventDefault(); stopCar(null); }
+});
+document.addEventListener('keyup', e => {
+  if (e.key in keyMap) { e.preventDefault(); pressedKeys.delete(e.key); stopCar(null); }
+});
 </script>
 </body>
-</html>
-'''
+</html>'''
