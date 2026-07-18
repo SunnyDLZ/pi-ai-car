@@ -29,22 +29,19 @@ class AIVision:
         self._initialized = False
 
     def init(self):
-        """加载 MobileNet SSD 模型 (必要时自动下载)"""
+        """加载 MobileNet SSD 模型 (模型文件需预先放置，不自动联网下载)"""
         model_dir = os.path.dirname(MOBILENET_MODEL)
         os.makedirs(model_dir, exist_ok=True)
 
-        # 检查模型文件是否存在
         proto_path = MOBILENET_PROTOTXT
         model_path = MOBILENET_MODEL
 
-        if not os.path.exists(proto_path):
-            print("[AIVision] 下载模型配置文件...")
-            urllib.request.urlretrieve(MODEL_URLS["prototxt"], proto_path)
-
-        if not os.path.exists(model_path):
-            print("[AIVision] 下载模型权重 (~30MB)...")
-            urllib.request.urlretrieve(MODEL_URLS["caffemodel"], model_path)
-            print("[AIVision] 模型下载完成")
+        # 模型文件需手动放置到对应路径；不在此处联网下载，
+        # 避免无网络/网络受限环境下阻塞或崩溃导致整个程序退出。
+        if not os.path.exists(proto_path) or not os.path.exists(model_path):
+            print("[AIVision] 模型文件缺失，跳过 AI 视觉初始化 (视觉功能不可用，不影响网页控制端)")
+            self._initialized = False
+            return False
 
         # 加载模型
         self._net = cv2.dnn.readNetFromCaffe(proto_path, model_path)

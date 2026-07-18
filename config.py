@@ -100,7 +100,7 @@ USB_CAMERA_ID = 0  # /dev/video0
 # ========== Web 服务 ==========
 
 WEB_HOST = "0.0.0.0"
-WEB_PORT = 5000
+WEB_PORT = 2222
 
 # ========== AI 视觉 ==========
 

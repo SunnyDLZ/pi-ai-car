@@ -144,6 +144,12 @@ class AICar:
 
     def _auto_pilot_loop(self):
         """自动避障巡游模式"""
+        # 电机未初始化 (如硬件未接/无 GPIO 权限) 时，自动巡游无意义，
+        # 直接退出避免对未初始化的 GPIO 操作导致崩溃。
+        if not getattr(self.motor, "_initialized", False):
+            print("[AutoPilot] 电机未初始化，跳过自动巡游线程")
+            return
+
         print("[AutoPilot] 自动巡游启动")
         while self._running:
             if self.get_mode() != "auto":
@@ -270,10 +276,13 @@ class AICar:
     def cleanup(self):
         """安全释放所有资源"""
         print("\n[Main] 正在关闭系统...")
-        self.motor.stop()
-        self.motor.cleanup()
-        self.servo.cleanup()
-        self.ultrasonic.cleanup()
+        if getattr(self.motor, "_initialized", False):
+            self.motor.stop()
+            self.motor.cleanup()
+        if getattr(self.servo, "_initialized", False):
+            self.servo.cleanup()
+        if getattr(self.ultrasonic, "_initialized", False):
+            self.ultrasonic.cleanup()
         self.camera_csi.cleanup()
         self.camera_usb.cleanup()
         # 仅在语音输出已初始化时才播报
