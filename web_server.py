@@ -203,8 +203,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
   --bg: #0d0d1a; --panel: #16213e; --accent: #e94560;
   --accent2: #0f3460; --text: #eee; --green: #00e676;
   --btn: #1a1a3e; --btn-active: #e94560; --radius: 14px;
-  /* 自适应尺寸单位 — 基于视口短边 vmin (放大以利用更多空间) */
-  --dpad-btn: min(15vmin, 88px);
+  /* 自适应尺寸单位 — 基于视口短边 vmin (D-Pad进一步放大) */
+  --dpad-btn: min(22vmin, 130px);
   --gimbal-btn: min(11vmin, 60px);
   --rotate-w: min(22vmin, 120px);
   --rotate-h: min(11vmin, 64px);
@@ -230,30 +230,13 @@ html, body {
   #main-app { display:none; }
 }
 
-/* ===== 主布局: 横屏三栏 (flex 弹性) ===== */
+/* ===== 主布局: 横屏三栏 (无顶栏，全高利用) ===== */
 #main-app {
   display:flex;
   flex-direction:column;
   width:100%; height:100%;
   gap:4px; padding:4px;
 }
-
-/* ===== 顶栏 ===== */
-.topbar {
-  flex:0 0 auto; height:36px;
-  display:flex; align-items:center; justify-content:space-between;
-  background:var(--panel); border-radius:10px; padding:0 12px;
-  font-size:13px;
-}
-.topbar-left { display:flex; align-items:center; gap:10px; }
-.topbar-right { display:flex; align-items:center; gap:8px; }
-.dist-badge {
-  background:var(--accent2); padding:3px 10px; border-radius:16px;
-  font-size:12px; color:var(--green); white-space:nowrap;
-}
-.dist-badge.warn { color:#ffb74d; }
-.dist-badge.danger { color:var(--accent); animation:pulse 0.5s infinite; }
-@keyframes pulse { 50% { opacity:0.5; } }
 
 /* ===== 主体三栏 ===== */
 .main-body {
@@ -362,19 +345,19 @@ html, body {
 }
 .speed-slider {
   flex:1; -webkit-appearance:none; appearance:none;
-  height:36px; border-radius:8px; outline:none;
+  height:18px; border-radius:6px; outline:none;
   background:linear-gradient(to right, var(--accent2), var(--accent));
   touch-action:pan-x; /* 允许水平拖动 */
   pointer-events:auto;
 }
 .speed-slider::-webkit-slider-thumb {
-  -webkit-appearance:none; width:36px; height:36px;
+  -webkit-appearance:none; width:28px; height:28px;
   border-radius:50%; background:#fff; cursor:grab;
   box-shadow:0 2px 8px rgba(0,0,0,0.5); border:3px solid var(--accent);
 }
 .speed-slider:active::-webkit-slider-thumb { cursor:grabbing; transform:scale(1.15); }
 .speed-slider::-moz-range-thumb {
-  width:36px; height:36px; border-radius:50%; background:#fff;
+  width:28px; height:28px; border-radius:50%; background:#fff;
   cursor:grab; border:3px solid var(--accent);
 }
 .speed-value {
@@ -429,7 +412,7 @@ html, body {
 /* 超小屏幕适配 */
 @media (max-height: 340px) {
   :root {
-    --dpad-btn: min(13vmin, 68px);
+    --dpad-btn: min(18vmin, 96px);
     --gimbal-btn: min(9vmin, 48px);
   }
   .dpad-label, .section-label, .speed-label { display:none; }
@@ -450,19 +433,7 @@ html, body {
 <!-- 主应用 -->
 <div id="main-app">
 
-  <!-- 顶栏 -->
-  <div class="topbar">
-    <div class="topbar-left">
-      <span style="font-size:16px;">🚗</span>
-      <span style="font-weight:600;">AI 小车</span>
-      <span id="modeLabel" style="font-size:12px;color:var(--accent);">手动模式</span>
-    </div>
-    <div class="topbar-right">
-      <span class="dist-badge" id="distDisplay">📡 --</span>
-    </div>
-  </div>
-
-  <!-- 主体三栏 -->
+  <!-- 主体三栏 (无顶栏，全高) -->
   <div class="main-body">
 
   <!-- 左栏: 方向控制 (左手) -->
@@ -524,8 +495,11 @@ html, body {
 
     <div class="divider"></div>
 
-    <!-- 云台 -->
+    <!-- 测距 + 云台 -->
     <div class="section-label">云台控制</div>
+    <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:4px;">
+      <span class="dist-badge" id="distDisplay" style="background:var(--accent2);padding:3px 10px;border-radius:16px;font-size:12px;color:var(--green);white-space:nowrap;">📡 --</span>
+    </div>
     <div class="gimbal-grid">
       <div></div>
       <button ontouchstart="gimbalTilt(-10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(-10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↑</button>
@@ -649,8 +623,6 @@ async function setMode(mode) {
   }).catch(()=>{});
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('mode' + mode.charAt(0).toUpperCase() + mode.slice(1)).classList.add('active');
-  const names = {manual:'手动模式', auto:'自动模式', voice:'语音模式'};
-  document.getElementById('modeLabel').textContent = names[mode];
   if (navigator.vibrate) navigator.vibrate(15);
 }
 
