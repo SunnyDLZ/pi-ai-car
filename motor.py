@@ -7,10 +7,10 @@ motor.py - L298N 电机驱动 + 麦克纳姆轮运动学
 
 import RPi.GPIO as GPIO
 from config import (
-    MOTOR1_FL_IN1, MOTOR1_FL_IN2, MOTOR1_FL_ENA,
-    MOTOR1_FR_IN3, MOTOR1_FR_IN4, MOTOR1_FR_ENB,
-    MOTOR2_RL_IN1, MOTOR2_RL_IN2, MOTOR2_RL_ENA,
-    MOTOR2_RR_IN3, MOTOR2_RR_IN4, MOTOR2_RR_ENB,
+    MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA,
+    MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB,
+    MOTOR2_RR_IN1, MOTOR2_RR_IN2, MOTOR2_RR_ENA,
+    MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB,
     MOTOR_PWM_FREQ, MOTOR_SPEED_MIN, MOTOR_SPEED_MAX,
     MOTOR_SPEED_DEFAULT
 )
@@ -34,10 +34,10 @@ class MotorController:
 
         # 所有电机引脚
         motor_pins = [
-            MOTOR1_FL_IN1, MOTOR1_FL_IN2, MOTOR1_FL_ENA,
-            MOTOR1_FR_IN3, MOTOR1_FR_IN4, MOTOR1_FR_ENB,
-            MOTOR2_RL_IN1, MOTOR2_RL_IN2, MOTOR2_RL_ENA,
-            MOTOR2_RR_IN3, MOTOR2_RR_IN4, MOTOR2_RR_ENB,
+            MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA,
+            MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB,
+            MOTOR2_RR_IN1, MOTOR2_RR_IN2, MOTOR2_RR_ENA,
+            MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB,
         ]
 
         # 设置 GPIO 方向
@@ -46,8 +46,8 @@ class MotorController:
 
         # 初始化 PWM (ENA/ENB 脚)
         pwm_pins = [
-            MOTOR1_FL_ENA, MOTOR1_FR_ENB,
-            MOTOR2_RL_ENA, MOTOR2_RR_ENB,
+            MOTOR1_FR_ENA, MOTOR1_FL_ENB,
+            MOTOR2_RR_ENA, MOTOR2_RL_ENB,
         ]
         for pin in pwm_pins:
             pwm = GPIO.PWM(pin, MOTOR_PWM_FREQ)
@@ -59,10 +59,10 @@ class MotorController:
 
     def stop(self):
         """紧急停止所有电机"""
-        self._set_motor(MOTOR1_FL_IN1, MOTOR1_FL_IN2, MOTOR1_FL_ENA, 0)
-        self._set_motor(MOTOR1_FR_IN3, MOTOR1_FR_IN4, MOTOR1_FR_ENB, 0)
-        self._set_motor(MOTOR2_RL_IN1, MOTOR2_RL_IN2, MOTOR2_RL_ENA, 0)
-        self._set_motor(MOTOR2_RR_IN3, MOTOR2_RR_IN4, MOTOR2_RR_ENB, 0)
+        self._set_motor(MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA, 0)
+        self._set_motor(MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB, 0)
+        self._set_motor(MOTOR2_RR_IN1, MOTOR2_RR_IN2, MOTOR2_RR_ENA, 0)
+        self._set_motor(MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB, 0)
 
     def _set_motor(self, in1, in2, ena, speed_pct):
         """设置单个电机的方向和速度
@@ -107,10 +107,10 @@ class MotorController:
           FL(前左)   FR(前右)
           RL(后左)   RR(后右)
         """
-        self._set_motor(MOTOR1_FL_IN1, MOTOR1_FL_IN2, MOTOR1_FL_ENA, fl)
-        self._set_motor(MOTOR1_FR_IN3, MOTOR1_FR_IN4, MOTOR1_FR_ENB, fr)
-        self._set_motor(MOTOR2_RL_IN1, MOTOR2_RL_IN2, MOTOR2_RL_ENA, rl)
-        self._set_motor(MOTOR2_RR_IN3, MOTOR2_RR_IN4, MOTOR2_RR_ENB, rr)
+        self._set_motor(MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA, fr)
+        self._set_motor(MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB, fl)
+        self._set_motor(MOTOR2_RR_IN1, MOTOR2_RR_IN2, MOTOR2_RR_ENA, rr)
+        self._set_motor(MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB, rl)
 
     def _normalize(self, speeds):
         """将各轮速度限制在 [-100, 100] 范围内，保持比例"""
