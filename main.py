@@ -26,7 +26,8 @@ from camera import CSICamera
 from voice import VoiceOutput, VoiceInput
 from ai_vision import AIVision
 from web_server import WebServer
-from config import OBSTACLE_WARN, OBSTACLE_STOP, WEB_PORT
+from config import OBSTACLE_WARN, OBSTACLE_SLOW, OBSTACLE_STOP, \
+    AUTO_MAX_SPEED, AUTO_SLOW_SPEED, MOTOR_SPEED_MIN, WEB_PORT
 
 
 class AICar:
@@ -46,6 +47,7 @@ class AICar:
         self._auto_mode = False
         self._mode = "manual"  # manual / auto / voice
         self._mode_lock = threading.Lock()
+        self._saved_user_speed = None  # 进入 auto 前保存的用户速度
 
         # 信号处理
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -124,7 +126,19 @@ class AICar:
     def set_mode(self, mode):
         """切换运行模式 (线程安全，供 WebServer 回调调用)"""
         with self._mode_lock:
+            prev_mode = self._mode
             self._mode = mode
+
+            # 进入 auto: 保存用户速度，设为 100 让 y 值直接等于实际占空比
+            if mode == "auto" and prev_mode != "auto":
+                self._saved_user_speed = self.motor.get_speed()
+                self.motor.set_speed(100)
+            # 退出 auto: 恢复用户速度
+            elif mode != "auto" and prev_mode == "auto":
+                if self._saved_user_speed is not None:
+                    self.motor.set_speed(self._saved_user_speed)
+                    self._saved_user_speed = None
+
         print(f"[Main] 切换到模式: {mode}")
         if mode == "voice":
             self.voice_out.say("语音模式已开启")
@@ -134,9 +148,14 @@ class AICar:
             self.motor.stop()
 
     def _auto_pilot_loop(self):
-        """自动避障巡游模式"""
-        # 电机或超声波未初始化 (如硬件未接/无 GPIO 权限) 时，自动巡游无意义，
-        # 直接退出避免对未初始化的 GPIO 操作导致崩溃。
+        """自动避障巡游模式
+
+        速度策略 (motor speed=100, y 值=实际占空比):
+          dist >= 50cm → 前进 30% (AUTO_MAX_SPEED)
+          30 <= dist < 50 → 前进 20% (AUTO_SLOW_SPEED)
+          15 <= dist < 30 → 线性减速: 20%→0%, 越近越慢
+          dist < 15cm → 急停 + 后退 + 转向
+        """
         if not getattr(self.motor, "_initialized", False):
             print("[AutoPilot] 电机未初始化，跳过自动巡游线程")
             return
@@ -146,34 +165,39 @@ class AICar:
 
         print("[AutoPilot] 自动巡游启动")
         while self._running:
-            # 非 auto 模式 (manual/voice) 下，不干预电机 —
-            # 手动控制时车应保持运动，不能在这里 stop 覆盖网页指令
             if self.get_mode() != "auto":
                 time.sleep(0.5)
                 continue
 
-            # 测量前方距离
             dist = self.ultrasonic.measure()
             if dist < 0:
                 time.sleep(0.1)
                 continue
 
-            print(f"[AutoPilot] 前方 {dist:.0f} cm")
-
             if dist < OBSTACLE_STOP:
-                # 太近了 → 急停 + 后退 + 转向
+                # 太近 → 急停 + 后退 + 转向
                 self.motor.stop()
                 self.voice_out.say("前方障碍", lang="zh")
-                self.motor.move(y=-40)
+                self.motor.move(y=-20)
                 time.sleep(0.5)
-                self.motor.move(rotation=50)
+                self.motor.move(rotation=30)
                 time.sleep(0.3)
+            elif dist < OBSTACLE_SLOW:
+                # 15~30cm → 线性减速 (20% → 0%)
+                ratio = (dist - OBSTACLE_STOP) / (OBSTACLE_SLOW - OBSTACLE_STOP)
+                speed = int(AUTO_SLOW_SPEED * ratio)
+                if speed < MOTOR_SPEED_MIN:
+                    speed = 0  # 低于起步最小值，直接停
+                print(f"[AutoPilot] 前方 {dist:.0f}cm → 减速 {speed}%")
+                self.motor.move(y=speed)
             elif dist < OBSTACLE_WARN:
-                # 警告距离 → 减速 + 偏向
-                self.motor.move(y=50, rotation=30)
+                # 30~50cm → 固定 20% 慢速
+                print(f"[AutoPilot] 前方 {dist:.0f}cm → 慢速 {AUTO_SLOW_SPEED}%")
+                self.motor.move(y=AUTO_SLOW_SPEED)
             else:
-                # 安全 → 前进
-                self.motor.move(y=40)
+                # >= 50cm → 安全 30% 前进
+                print(f"[AutoPilot] 前方 {dist:.0f}cm → 巡航 {AUTO_MAX_SPEED}%")
+                self.motor.move(y=AUTO_MAX_SPEED)
 
             time.sleep(0.2)
 

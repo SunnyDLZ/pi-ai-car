@@ -76,8 +76,13 @@ TRIG_PULSE_US = 10       # 触发脉冲宽度 10us
 MODULE_SIZE = "45mm × 20mm × 15mm"  # 模块尺寸
 
 # 避障阈值 (cm)
-OBSTACLE_WARN = 30    # 预警距离
-OBSTACLE_STOP = 15    # 停车距离
+OBSTACLE_WARN = 50    # 减速距离: <50cm 开始减速
+OBSTACLE_SLOW = 30    # 渐减速距离: <30cm 继续线性减速到 0
+OBSTACLE_STOP = 15    # 停车距离: <15cm 急停后退转向
+
+# 自动巡游速度参数 (%)
+AUTO_MAX_SPEED = 30   # 安全距离时最高速
+AUTO_SLOW_SPEED = 20  # 进入减速区 (<50cm) 降到该速度
 
 # ========== 舵机参数 ==========
 
