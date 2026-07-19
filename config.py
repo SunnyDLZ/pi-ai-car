@@ -70,7 +70,7 @@ TIMEOUT_SEC = 0.027  # 超时 (对应 ~4.6m，略超最大量程)
 # 电气参数
 ULTRASONIC_VCC = 5       # 工作电压 5V DC
 ULTRASONIC_CURRENT = 15  # 工作电流 15mA
-ULTRASONIC_FREQ = 40     # 工作频率 40Hz
+ULTRASONIC_FREQ = 40000  # 工作频率 40kHz
 ULTRASONIC_ANGLE = 15    # 测量角度 15°
 TRIG_PULSE_US = 10       # 触发脉冲宽度 10us
 MODULE_SIZE = "45mm × 20mm × 15mm"  # 模块尺寸
@@ -110,7 +110,7 @@ MOBILENET_PROTOTXT = "models/MobileNetSSD_deploy.prototxt"
 MOBILENET_MODEL = "models/MobileNetSSD_deploy.caffemodel"
 
 # VOC 类别标签 (MobileNet SSD 基于 PASCAL VOC 20 类 + background)
-COCO_CLASSES = [
+COCO_CLASSES = [  # 保留原名兼容现有代码，实际为 VOC 类别
     "background", "aeroplane", "bicycle", "bird", "boat",
     "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
     "dog", "horse", "motorbike", "person", "pottedplant", "sheep",

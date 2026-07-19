@@ -4,3 +4,9 @@
 flask>=3.0
 numpy<2
 opencv-python-headless>=4.8
+
+# 以下为系统级包，不在 pip 中安装 (通过 apt / 系统自带):
+# RPi.GPIO    — 树莓派 GPIO 控制 (系统自带)
+# pigpio      — 舵机硬件 PWM: sudo apt install python3-pigpio
+# picamera2   — CSI 摄像头: sudo apt install python3-picamera2
+# SpeechRecognition — 语音识别: pip install SpeechRecognition (需联网)

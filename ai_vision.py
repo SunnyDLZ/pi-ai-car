@@ -6,18 +6,10 @@ ai_vision.py - AI 视觉识别模块
 """
 
 import os
-import urllib.request
 import numpy as np
 import cv2
 from config import DETECTION_CONFIDENCE, COCO_CLASSES, \
     MOBILENET_PROTOTXT, MOBILENET_MODEL
-
-
-# MobileNet SSD 模型下载地址 (Caffe)
-MODEL_URLS = {
-    "prototxt": "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/deploy.prototxt",
-    "caffemodel": "https://github.com/chuanqi305/MobileNet-SSD/raw/master/mobilenet_iter_73000.caffemodel",
-}
 
 
 class AIVision:

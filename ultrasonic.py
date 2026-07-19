@@ -22,6 +22,7 @@ ultrasonic.py - HY-SRF05 超声波测距模块
 """
 
 import time
+import threading
 import RPi.GPIO as GPIO
 from config import ULTRASONIC_TRIG, ULTRASONIC_ECHO, \
     MAX_DISTANCE, MIN_DISTANCE, SONIC_SPEED, TIMEOUT_SEC
@@ -32,6 +33,7 @@ class Ultrasonic:
 
     def __init__(self):
         self._initialized = False
+        self._lock = threading.Lock()  # 防止多线程同时触发测距
 
     def init(self):
         if self._initialized:
@@ -47,6 +49,7 @@ class Ultrasonic:
         """测量距离 (厘米)
 
         多次采样取中位数，去除异常值。
+        线程安全 — 内部加锁防止并发触发。
 
         Args:
             samples: 采样次数 (默认 5)
@@ -54,19 +57,23 @@ class Ultrasonic:
         Returns:
             float: 距离 (cm)，超时返回 -1
         """
-        distances = []
-        for _ in range(samples):
-            d = self._single_measure()
-            if MIN_DISTANCE <= d <= MAX_DISTANCE:
-                distances.append(d)
-            time.sleep(0.01)
-
-        if not distances:
+        if not self._initialized:
             return -1
 
-        # 排序后取中位数
-        distances.sort()
-        return distances[len(distances) // 2]
+        with self._lock:
+            distances = []
+            for _ in range(samples):
+                d = self._single_measure()
+                if MIN_DISTANCE <= d <= MAX_DISTANCE:
+                    distances.append(d)
+                time.sleep(0.01)
+
+            if not distances:
+                return -1
+
+            # 排序后取中位数
+            distances.sort()
+            return distances[len(distances) // 2]
 
     def _single_measure(self):
         """单次测距"""

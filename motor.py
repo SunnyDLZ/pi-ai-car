@@ -5,6 +5,7 @@ motor.py - L298N 电机驱动 + 麦克纳姆轮运动学
 驱动板: L298N x2 (每块驱动两个轮子)
 """
 
+import threading
 import RPi.GPIO as GPIO
 from config import (
     MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA,
@@ -23,6 +24,7 @@ class MotorController:
         self._initialized = False
         self._pwm_channels = {}  # (pin, pwm_object)
         self._speed = MOTOR_SPEED_DEFAULT
+        self._lock = threading.Lock()  # 防止多线程同时控制电机
 
     def init(self):
         """初始化 GPIO 和 PWM"""
@@ -68,17 +70,19 @@ class MotorController:
         不销毁/重建 PWM 对象，避免 RPi.GPIO 软件 PWM 重建时的时序问题
         导致某些轮子（尤其是硬件 PWM 引脚 BCM12）启动延迟或失效。
         """
-        for in1, in2, ena in [
-            (MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA),
-            (MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB),
-            (MOTOR2_RR_IN1, MOTOR2_RR_IN2, MOTOR2_RR_ENA),
-            (MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB),
-        ]:
-            GPIO.output(in1, GPIO.LOW)
-            GPIO.output(in2, GPIO.LOW)
-            if ena in self._pwm_channels:
-                self._pwm_channels[ena].ChangeDutyCycle(0)
-        print("[Motor] STOP", flush=True)
+        if not self._initialized:
+            return
+        with self._lock:
+            for in1, in2, ena in [
+                (MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA),
+                (MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB),
+                (MOTOR2_RR_IN1, MOTOR2_RR_IN2, MOTOR2_RR_ENA),
+                (MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB),
+            ]:
+                GPIO.output(in1, GPIO.LOW)
+                GPIO.output(in2, GPIO.LOW)
+                if ena in self._pwm_channels:
+                    self._pwm_channels[ena].ChangeDutyCycle(0)
 
     def _set_motor(self, in1, in2, ena, speed_pct):
         """设置单个电机的方向和速度
@@ -152,6 +156,9 @@ class MotorController:
             y:   -100~100, 纵向 (+前)
             rotation: -100~100, 旋转 (+顺时针)
         """
+        if not self._initialized:
+            return
+
         # 麦克纳姆轮运动学公式:
         # FL =  y + x + rotation
         # FR =  y - x - rotation
@@ -171,8 +178,8 @@ class MotorController:
         rl = int(rl * scale)
         rr = int(rr * scale)
 
-        self._apply_to_all(fl, fr, rl, rr)
-        print(f"[Motor] MOVE x={x} y={y} r={rotation} -> FL={fl} FR={fr} RL={rl} RR={rr} (speed={self._speed})", flush=True)
+        with self._lock:
+            self._apply_to_all(fl, fr, rl, rr)
 
     # ============== 便捷方向接口 ==============
 
@@ -241,5 +248,6 @@ class MotorController:
         self.stop()
         for pwm in self._pwm_channels.values():
             pwm.stop()
+        self._pwm_channels.clear()
         self._initialized = False
         print("[Motor] 资源已释放")

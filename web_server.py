@@ -406,6 +406,11 @@ html, body {
   .right-panel { padding:4px; gap:3px; }
   .left-panel { padding:4px; }
 }
+
+/* 测距徽章颜色 */
+.dist-badge.warn { color: #ff9800 !important; }
+.dist-badge.danger { color: #f44336 !important; animation: pulse 0.5s infinite alternate; }
+@keyframes pulse { from { opacity: 0.6; } to { opacity: 1; } }
 </style>
 </head>
 <body>
@@ -444,8 +449,6 @@ html, body {
     <div class="cam-overlay-top">
       <span id="aiStatus" style="font-size:11px;color:var(--green);background:rgba(0,0,0,0.5);padding:2px 8px;border-radius:10px;">● LIVE</span>
       <span></span>
-    </div>
-    <div class="cam-overlay-bottom">
     </div>
   </div>
 

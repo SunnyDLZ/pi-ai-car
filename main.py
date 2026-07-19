@@ -160,8 +160,6 @@ class AICar:
 
             print(f"[AutoPilot] 前方 {dist:.0f} cm")
 
-            # 保存用户速度，自动巡航用固定速度，退出后恢复
-            user_speed = self.motor.get_speed()
             if dist < OBSTACLE_STOP:
                 # 太近了 → 急停 + 后退 + 转向
                 self.motor.stop()
@@ -176,8 +174,6 @@ class AICar:
             else:
                 # 安全 → 前进
                 self.motor.move(y=40)
-            # 恢复用户速度
-            self.motor.set_speed(user_speed)
 
             time.sleep(0.2)
 
@@ -279,6 +275,12 @@ class AICar:
         if getattr(self.ultrasonic, "_initialized", False):
             self.ultrasonic.cleanup()
         self.camera_csi.cleanup()
+        # 清理 GPIO (由 motor/ultrasonic 共用)
+        try:
+            import RPi.GPIO as GPIO
+            GPIO.cleanup()
+        except Exception:
+            pass
         # 仅在语音输出已初始化时才播报
         try:
             if self.voice_out._tts_engine:

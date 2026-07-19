@@ -107,5 +107,6 @@ class ServoGimbal:
         if self._pi:
             self._pi.set_servo_pulsewidth(SERVO_PAN_PIN, 0)
             self._pi.set_servo_pulsewidth(SERVO_TILT_PIN, 0)
-            # 不需要 stop()，pigpio 连接在程序退出时自动断开
+            self._pi.stop()
+            self._pi = None
             print("[Servo] 舵机资源已释放")
