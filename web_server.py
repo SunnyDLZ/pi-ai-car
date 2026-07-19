@@ -203,6 +203,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
   --bg: #0d0d1a; --panel: #16213e; --accent: #e94560;
   --accent2: #0f3460; --text: #eee; --green: #00e676;
   --btn: #1a1a3e; --btn-active: #e94560; --radius: 14px;
+  /* 自适应尺寸单位 — 基于视口短边 vmin */
+  --dpad-btn: min(11vmin, 64px);
+  --gimbal-btn: min(8vmin, 44px);
+  --rotate-w: min(16vmin, 80px);
+  --rotate-h: min(8vmin, 48px);
 }
 html, body {
   width:100%; height:100%; overflow:hidden;
@@ -225,18 +230,17 @@ html, body {
   #main-app { display:none; }
 }
 
-/* ===== 主布局: 横屏三栏 ===== */
+/* ===== 主布局: 横屏三栏 (flex 弹性) ===== */
 #main-app {
-  display:grid;
-  grid-template-columns: 210px 1fr 200px;
-  grid-template-rows: 44px 1fr;
+  display:flex;
+  flex-direction:column;
   width:100%; height:100%;
-  gap:6px; padding:6px;
+  gap:4px; padding:4px;
 }
 
 /* ===== 顶栏 ===== */
 .topbar {
-  grid-column:1/-1;
+  flex:0 0 auto; height:36px;
   display:flex; align-items:center; justify-content:space-between;
   background:var(--panel); border-radius:10px; padding:0 12px;
   font-size:13px;
@@ -251,23 +255,29 @@ html, body {
 .dist-badge.danger { color:var(--accent); animation:pulse 0.5s infinite; }
 @keyframes pulse { 50% { opacity:0.5; } }
 
+/* ===== 主体三栏 ===== */
+.main-body {
+  flex:1 1 auto; display:flex; gap:4px; min-height:0;
+}
+
 /* ===== 左栏: 方向控制 (左手) ===== */
 .left-panel {
+  flex:0 0 auto; width:min(26vmin, 220px);
   display:flex; flex-direction:column; align-items:center;
-  justify-content:center; gap:8px;
-  background:var(--panel); border-radius:var(--radius); padding:8px;
+  justify-content:center; gap:6px;
+  background:var(--panel); border-radius:var(--radius); padding:6px;
 }
 
 /* 8方向 D-Pad */
 .dpad {
   display:grid;
-  grid-template-columns: repeat(3, 56px);
-  grid-template-rows: repeat(3, 56px);
+  grid-template-columns: repeat(3, var(--dpad-btn));
+  grid-template-rows: repeat(3, var(--dpad-btn));
   gap:4px;
 }
 .dpad button {
-  width:56px; height:56px; border:none; border-radius:12px;
-  background:var(--btn); color:var(--text); font-size:24px;
+  width:var(--dpad-btn); height:var(--dpad-btn); border:none; border-radius:12px;
+  background:var(--btn); color:var(--text); font-size:calc(var(--dpad-btn) * 0.4);
   cursor:pointer; transition:all 0.08s; touch-action:manipulation;
   display:flex; align-items:center; justify-content:center;
   border:1px solid rgba(255,255,255,0.05);
@@ -277,7 +287,7 @@ html, body {
   box-shadow:0 0 12px rgba(233,69,96,0.5);
 }
 .dpad .stop-btn {
-  background:var(--accent2); color:var(--accent); font-size:20px;
+  background:var(--accent2); color:var(--accent); font-size:calc(var(--dpad-btn) * 0.35);
   border:1px solid var(--accent);
 }
 .dpad .stop-btn:active, .dpad .stop-btn.active {
@@ -285,13 +295,14 @@ html, body {
 }
 
 .dpad-label {
-  font-size:11px; color:#666; text-align:center; margin-top:2px;
+  font-size:10px; color:#666; text-align:center; margin-top:2px;
 }
 
 /* ===== 中栏: 摄像头画面 ===== */
 .center-panel {
+  flex:1 1 auto; min-width:0;
   background:#000; border-radius:var(--radius); overflow:hidden;
-  position:relative; min-height:0; min-width:0;
+  position:relative;
   display:flex; align-items:center; justify-content:center;
 }
 .center-panel img {
@@ -315,9 +326,10 @@ html, body {
 
 /* ===== 右栏: 功能控制 (右手) ===== */
 .right-panel {
-  display:flex; flex-direction:column; gap:6px;
-  background:var(--panel); border-radius:var(--radius); padding:8px;
-  overflow-y:auto;
+  flex:0 0 auto; width:min(26vmin, 220px);
+  display:flex; flex-direction:column; gap:4px;
+  background:var(--panel); border-radius:var(--radius); padding:6px;
+  overflow-y:auto; -webkit-overflow-scrolling:touch;
 }
 
 /* 旋转控制 */
@@ -329,7 +341,7 @@ html, body {
   display:flex; gap:6px; justify-content:center;
 }
 .rotate-btn {
-  width:72px; height:48px; border:none; border-radius:10px;
+  width:var(--rotate-w); height:var(--rotate-h); border:none; border-radius:10px;
   background:var(--btn); color:var(--text); font-size:13px;
   cursor:pointer; transition:all 0.08s; touch-action:manipulation;
   display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -346,36 +358,41 @@ html, body {
   display:flex; flex-direction:column; align-items:center; gap:4px;
 }
 .speed-row {
-  display:flex; align-items:center; gap:8px; width:100%;
+  display:flex; align-items:center; gap:6px; width:100%;
 }
 .speed-slider {
   flex:1; -webkit-appearance:none; appearance:none;
-  height:8px; border-radius:4px; outline:none;
+  height:36px; border-radius:8px; outline:none;
   background:linear-gradient(to right, var(--accent2), var(--accent));
+  touch-action:pan-x; /* 允许水平拖动 */
+  pointer-events:auto;
 }
 .speed-slider::-webkit-slider-thumb {
-  -webkit-appearance:none; width:26px; height:26px;
-  border-radius:50%; background:#fff; cursor:pointer;
-  box-shadow:0 2px 6px rgba(0,0,0,0.4); border:2px solid var(--accent);
+  -webkit-appearance:none; width:36px; height:36px;
+  border-radius:50%; background:#fff; cursor:grab;
+  box-shadow:0 2px 8px rgba(0,0,0,0.5); border:3px solid var(--accent);
 }
+.speed-slider:active::-webkit-slider-thumb { cursor:grabbing; transform:scale(1.15); }
 .speed-slider::-moz-range-thumb {
-  width:26px; height:26px; border-radius:50%; background:#fff;
-  cursor:pointer; border:2px solid var(--accent);
+  width:36px; height:36px; border-radius:50%; background:#fff;
+  cursor:grab; border:3px solid var(--accent);
 }
 .speed-value {
-  min-width:36px; text-align:center; font-size:15px; font-weight:bold;
+  min-width:40px; text-align:center; font-size:16px; font-weight:bold;
   color:var(--accent);
 }
 .speed-label { font-size:10px; color:#555; }
 
 /* 云台控制 */
 .gimbal-grid {
-  display:grid; grid-template-columns:repeat(3,40px); grid-template-rows:repeat(3,40px);
+  display:grid;
+  grid-template-columns:repeat(3, var(--gimbal-btn));
+  grid-template-rows:repeat(3, var(--gimbal-btn));
   gap:3px; justify-content:center; margin:0 auto;
 }
 .gimbal-grid button {
-  width:40px; height:40px; border:none; border-radius:8px;
-  background:var(--btn); color:var(--text); font-size:16px;
+  width:var(--gimbal-btn); height:var(--gimbal-btn); border:none; border-radius:8px;
+  background:var(--btn); color:var(--text); font-size:calc(var(--gimbal-btn) * 0.4);
   cursor:pointer; transition:all 0.08s; touch-action:manipulation;
   display:flex; align-items:center; justify-content:center;
   border:1px solid rgba(255,255,255,0.05);
@@ -393,7 +410,7 @@ html, body {
   display:flex; gap:4px; justify-content:center;
 }
 .mode-btn {
-  flex:1; padding:7px 4px; border:1px solid var(--accent2);
+  flex:1; padding:8px 4px; border:1px solid var(--accent2);
   border-radius:8px; background:transparent; color:var(--text);
   font-size:12px; cursor:pointer; transition:all 0.15s;
   touch-action:manipulation;
@@ -406,21 +423,19 @@ html, body {
 /* 分隔线 */
 .divider {
   width:100%; height:1px; background:rgba(255,255,255,0.06);
-  margin:2px 0;
+  margin:2px 0; flex:0 0 auto;
 }
 
-/* 紧凑屏幕适配 */
-@media (max-height: 400px) {
-  .dpad { grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(3, 48px); }
-  .dpad button { width:48px; height:48px; font-size:20px; }
-  .rotate-btn { height:42px; }
-  .gimbal-grid { grid-template-columns:repeat(3,34px); grid-template-rows:repeat(3,34px); }
-  .gimbal-grid button { width:34px; height:34px; }
-}
-@media (max-height: 360px) {
-  #main-app { grid-template-columns: 185px 1fr 180px; }
-  .dpad { grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(3, 44px); }
-  .dpad button { width:44px; height:44px; font-size:18px; }
+/* 超小屏幕适配 */
+@media (max-height: 340px) {
+  :root {
+    --dpad-btn: min(10vmin, 52px);
+    --gimbal-btn: min(7vmin, 36px);
+  }
+  .dpad-label, .section-label, .speed-label { display:none; }
+  .divider { margin:1px 0; }
+  .right-panel { padding:4px; gap:3px; }
+  .left-panel { padding:4px; }
 }
 </style>
 </head>
@@ -446,6 +461,9 @@ html, body {
       <span class="dist-badge" id="distDisplay">📡 --</span>
     </div>
   </div>
+
+  <!-- 主体三栏 -->
+  <div class="main-body">
 
   <!-- 左栏: 方向控制 (左手) -->
   <div class="left-panel">
@@ -498,7 +516,7 @@ html, body {
       <div class="speed-row">
         <span style="font-size:12px;color:#555;">慢</span>
         <input type="range" class="speed-slider" id="speedSlider" min="20" max="100" value="50"
-               oninput="updateSpeed(this.value)">
+               oninput="updateSpeed(this.value)" onchange="commitSpeed()">
         <span style="font-size:12px;color:#555;">快</span>
       </div>
       <div class="speed-value" id="speedDisplay">50%</div>
@@ -531,12 +549,14 @@ html, body {
     </div>
 
   </div>
+  </div><!-- /main-body -->
 </div>
 
 <script>
 let speedValue = 50;
 let currentPan = 90, currentTilt = 90;
-let activeDir = null;  // 当前活跃方向按钮
+let activeDir = null;
+let speedSendTimer = null;
 
 // ===== 按住移动 =====
 async function hold(x, y, r, btn) {
@@ -565,16 +585,29 @@ function stopCar(btn) {
   fetch('/api/stop', {method:'POST'}).catch(()=>{});
 }
 
-// ===== 速度 =====
+// ===== 速度滑块 (支持拖动) =====
 function updateSpeed(val) {
   speedValue = parseInt(val);
   document.getElementById('speedDisplay').textContent = val + '%';
+  // 拖动中只更新本地值，不发送请求（节流）
+  if (speedSendTimer) clearTimeout(speedSendTimer);
+  speedSendTimer = setTimeout(function() {
+    sendSpeed(speedValue);
+  }, 150);
+}
+
+function commitSpeed() {
+  // 松手时立即发送最终值
+  if (speedSendTimer) { clearTimeout(speedSendTimer); speedSendTimer = null; }
+  sendSpeed(speedValue);
+}
+
+function sendSpeed(s) {
   fetch('/api/control', {
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({x:0, y:0, rotation:0, speed:speedValue})
+    body: JSON.stringify({x:0, y:0, rotation:0, speed:s})
   }).catch(()=>{});
-  setTimeout(()=>{ fetch('/api/stop',{method:'POST'}); }, 100);
 }
 
 // ===== 云台 =====
@@ -648,8 +681,14 @@ async function updateDistance() {
 }
 setInterval(updateDistance, 800);
 
-// ===== 防止触摸滚动/缩放 =====
-document.addEventListener('touchmove', e => e.preventDefault(), {passive:false});
+// ===== 防止触摸滚动/缩放 (但不阻止滑块拖动) =====
+document.addEventListener('touchmove', function(e) {
+  // 允许 speed-slider 上的触摸移动
+  if (e.target && (e.target.id === 'speedSlider' || e.target.classList.contains('speed-slider'))) {
+    return; // 不阻止
+  }
+  e.preventDefault();
+}, {passive:false});
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('dblclick', e => e.preventDefault());
 
@@ -659,10 +698,10 @@ const keyMap = {
   'ArrowDown':[0,-100,0], 's':[0,-100,0], 'S':[0,-100,0],
   'ArrowLeft':[-100,0,0], 'a':[-100,0,0], 'A':[-100,0,0],
   'ArrowRight':[100,0,0], 'd':[100,0,0], 'D':[100,0,0],
-  'q':[-70,70,0], 'Q':[-70,70,0],     // 左前
-  'e':[70,70,0], 'E':[70,70,0],       // 右前
-  'z':[-70,-70,0], 'Z':[-70,-70,0],   // 左后
-  'x':[70,-70,0], 'X':[70,-70,0],     // 右后
+  'q':[-70,70,0], 'Q':[-70,70,0],
+  'e':[70,70,0], 'E':[70,70,0],
+  'z':[-70,-70,0], 'Z':[-70,-70,0],
+  'x':[70,-70,0], 'X':[70,-70,0],
 };
 const pressedKeys = new Set();
 document.addEventListener('keydown', e => {
