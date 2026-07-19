@@ -106,11 +106,13 @@ class MotorController:
         麦克纳姆轮映射:
           FL(前左)   FR(前右)
           RL(后左)   RR(后右)
+
+        注意: RL(左后轮) 电机接线极性相反，此处取反修正
         """
         self._set_motor(MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA, fr)
         self._set_motor(MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB, fl)
         self._set_motor(MOTOR2_RR_IN1, MOTOR2_RR_IN2, MOTOR2_RR_ENA, rr)
-        self._set_motor(MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB, rl)
+        self._set_motor(MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB, -rl)
 
     def _normalize(self, speeds):
         """将各轮速度限制在 [-100, 100] 范围内，保持比例"""

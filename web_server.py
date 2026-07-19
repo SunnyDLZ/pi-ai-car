@@ -440,15 +440,15 @@ html, body {
   <div class="left-panel">
     <div class="dpad-label">麦克纳姆轮 · 8方向</div>
     <div class="dpad">
-      <button data-act="fl" ontouchstart="hold(-70,70,0,this)" ontouchend="release(this)" onmousedown="hold(-70,70,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↖</button>
-      <button data-act="f" ontouchstart="hold(0,100,0,this)" ontouchend="release(this)" onmousedown="hold(0,100,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↑</button>
-      <button data-act="fr" ontouchstart="hold(70,70,0,this)" ontouchend="release(this)" onmousedown="hold(70,70,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↗</button>
-      <button data-act="sl" ontouchstart="hold(-100,0,0,this)" ontouchend="release(this)" onmousedown="hold(-100,0,0,this)" onmouseup="release(this)" onmouseleave="release(this)">←</button>
-      <button class="stop-btn" onclick="stopCar(this)">⏹</button>
-      <button data-act="sr" ontouchstart="hold(100,0,0,this)" ontouchend="release(this)" onmousedown="hold(100,0,0,this)" onmouseup="release(this)" onmouseleave="release(this)">→</button>
-      <button data-act="bl" ontouchstart="hold(-70,-70,0,this)" ontouchend="release(this)" onmousedown="hold(-70,-70,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↙</button>
-      <button data-act="b" ontouchstart="hold(0,-100,0,this)" ontouchend="release(this)" onmousedown="hold(0,-100,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↓</button>
-      <button data-act="br" ontouchstart="hold(70,-70,0,this)" ontouchend="release(this)" onmousedown="hold(70,-70,0,this)" onmouseup="release(this)" onmouseleave="release(this)">↘</button>
+      <button data-act="fl" ontouchstart="event.preventDefault();toggleDir(-70,70,0,this)" onclick="toggleDir(-70,70,0,this)">↖</button>
+      <button data-act="f" ontouchstart="event.preventDefault();toggleDir(0,100,0,this)" onclick="toggleDir(0,100,0,this)">↑</button>
+      <button data-act="fr" ontouchstart="event.preventDefault();toggleDir(70,70,0,this)" onclick="toggleDir(70,70,0,this)">↗</button>
+      <button data-act="sl" ontouchstart="event.preventDefault();toggleDir(-100,0,0,this)" onclick="toggleDir(-100,0,0,this)">←</button>
+      <button class="stop-btn" ontouchstart="event.preventDefault();stopCar(this)" onclick="stopCar(this)">⏹</button>
+      <button data-act="sr" ontouchstart="event.preventDefault();toggleDir(100,0,0,this)" onclick="toggleDir(100,0,0,this)">→</button>
+      <button data-act="bl" ontouchstart="event.preventDefault();toggleDir(-70,-70,0,this)" onclick="toggleDir(-70,-70,0,this)">↙</button>
+      <button data-act="b" ontouchstart="event.preventDefault();toggleDir(0,-100,0,this)" onclick="toggleDir(0,-100,0,this)">↓</button>
+      <button data-act="br" ontouchstart="event.preventDefault();toggleDir(70,-70,0,this)" onclick="toggleDir(70,-70,0,this)">↘</button>
     </div>
   </div>
 
@@ -471,10 +471,10 @@ html, body {
     <!-- 旋转 -->
     <div class="section-label">原地旋转</div>
     <div class="rotate-row">
-      <button class="rotate-btn" ontouchstart="hold(0,0,-70,this)" ontouchend="release(this)" onmousedown="hold(0,0,-70,this)" onmouseup="release(this)" onmouseleave="release(this)">
+      <button class="rotate-btn" ontouchstart="event.preventDefault();toggleRotate(0,0,-70,this)" onclick="toggleRotate(0,0,-70,this)">
         <span class="icon">⟲</span>左转
       </button>
-      <button class="rotate-btn" ontouchstart="hold(0,0,70,this)" ontouchend="release(this)" onmousedown="hold(0,0,70,this)" onmouseup="release(this)" onmouseleave="release(this)">
+      <button class="rotate-btn" ontouchstart="event.preventDefault();toggleRotate(0,0,70,this)" onclick="toggleRotate(0,0,70,this)">
         <span class="icon">⟳</span>右转
       </button>
     </div>
@@ -529,33 +529,70 @@ html, body {
 <script>
 let speedValue = 50;
 let currentPan = 90, currentTilt = 90;
-let activeDir = null;
+let activeDirBtn = null;
+let activeRotateBtn = null;
 let speedSendTimer = null;
 
-// ===== 按住移动 =====
-async function hold(x, y, r, btn) {
-  btn.classList.add('active');
+// ===== 点击切换方向 (点一下持续运动，再点一下停止) =====
+function toggleDir(x, y, r, btn) {
   if (navigator.vibrate) navigator.vibrate(15);
-  activeDir = btn;
-  try {
-    await fetch('/api/control', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({x, y, rotation:r, speed:speedValue})
-    });
-  } catch(e) {}
+
+  // 点同一个按钮 = 停止
+  if (activeDirBtn === btn) {
+    btn.classList.remove('active');
+    activeDirBtn = null;
+    stopCar(null);
+    return;
+  }
+
+  // 清除之前的方向按钮
+  if (activeDirBtn) activeDirBtn.classList.remove('active');
+  // 清除旋转按钮
+  if (activeRotateBtn) { activeRotateBtn.classList.remove('active'); activeRotateBtn = null; }
+
+  // 激活新方向
+  btn.classList.add('active');
+  activeDirBtn = btn;
+
+  fetch('/api/control', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({x, y, rotation:r, speed:speedValue})
+  }).catch(()=>{});
 }
 
-function release(btn) {
-  btn.classList.remove('active');
-  if (activeDir === btn) {
-    activeDir = null;
+// ===== 点击切换旋转 =====
+function toggleRotate(x, y, r, btn) {
+  if (navigator.vibrate) navigator.vibrate(15);
+
+  // 点同一个按钮 = 停止
+  if (activeRotateBtn === btn) {
+    btn.classList.remove('active');
+    activeRotateBtn = null;
     stopCar(null);
+    return;
   }
+
+  // 清除之前的旋转按钮
+  if (activeRotateBtn) activeRotateBtn.classList.remove('active');
+  // 清除方向按钮
+  if (activeDirBtn) { activeDirBtn.classList.remove('active'); activeDirBtn = null; }
+
+  // 激活新旋转
+  btn.classList.add('active');
+  activeRotateBtn = btn;
+
+  fetch('/api/control', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({x, y, rotation:r, speed:speedValue})
+  }).catch(()=>{});
 }
 
 function stopCar(btn) {
   if (btn) { btn.classList.add('active'); if(navigator.vibrate) navigator.vibrate(20); setTimeout(()=>btn.classList.remove('active'),200); }
+  if (activeDirBtn) { activeDirBtn.classList.remove('active'); activeDirBtn = null; }
+  if (activeRotateBtn) { activeRotateBtn.classList.remove('active'); activeRotateBtn = null; }
   fetch('/api/stop', {method:'POST'}).catch(()=>{});
 }
 
@@ -680,6 +717,7 @@ const keyMap = {
 };
 const pressedKeys = new Set();
 document.addEventListener('keydown', e => {
+  if (e.key === ' ') { e.preventDefault(); stopCar(null); return; }
   if (pressedKeys.has(e.key)) return;
   if (e.key in keyMap) {
     e.preventDefault();
@@ -688,10 +726,13 @@ document.addEventListener('keydown', e => {
     fetch('/api/control', {method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({x,y,rotation:r,speed:speedValue})}).catch(()=>{});
   }
-  if (e.key === ' ') { e.preventDefault(); stopCar(null); }
 });
 document.addEventListener('keyup', e => {
-  if (e.key in keyMap) { e.preventDefault(); pressedKeys.delete(e.key); stopCar(null); }
+  if (e.key in keyMap) {
+    e.preventDefault();
+    pressedKeys.delete(e.key);
+    stopCar(null);
+  }
 });
 </script>
 </body>
