@@ -205,7 +205,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
   --btn: #1a1a3e; --btn-active: #e94560; --radius: 14px;
   /* 自适应尺寸单位 — 基于视口短边 vmin (D-Pad进一步放大) */
   --dpad-btn: min(22vmin, 130px);
-  --gimbal-btn: min(14vmin, 76px);
+  --gimbal-btn: min(16vmin, 88px);
   --rotate-w: min(22vmin, 120px);
   --rotate-h: min(11vmin, 64px);
 }
@@ -361,8 +361,8 @@ html, body {
   cursor:grab; border:3px solid var(--accent);
 }
 .speed-value {
-  min-width:40px; text-align:center; font-size:16px; font-weight:bold;
-  color:var(--accent);
+  min-width:42px; text-align:center; font-size:14px; font-weight:bold;
+  color:var(--accent); flex:0 0 auto;
 }
 .speed-label { font-size:10px; color:#555; }
 
@@ -413,7 +413,7 @@ html, body {
 @media (max-height: 340px) {
   :root {
     --dpad-btn: min(18vmin, 96px);
-    --gimbal-btn: min(11vmin, 56px);
+    --gimbal-btn: min(13vmin, 68px);
   }
   .dpad-label, .section-label, .speed-label { display:none; }
   .divider { margin:1px 0; }
@@ -485,12 +485,12 @@ html, body {
     <div class="speed-section">
       <div class="speed-label">速度调节</div>
       <div class="speed-row">
-        <span style="font-size:12px;color:#555;">慢</span>
+        <span class="speed-value" id="speedDisplay">50%</span>
+        <span style="font-size:11px;color:#555;">慢</span>
         <input type="range" class="speed-slider" id="speedSlider" min="20" max="100" value="50"
                oninput="updateSpeed(this.value)" onchange="commitSpeed()">
-        <span style="font-size:12px;color:#555;">快</span>
+        <span style="font-size:11px;color:#555;">快</span>
       </div>
-      <div class="speed-value" id="speedDisplay">50%</div>
     </div>
 
     <div class="divider"></div>
@@ -616,24 +616,27 @@ async function gimbalCenter() {
 }
 
 // ===== 模式 =====
-async function setMode(mode) {
-  await fetch('/api/mode', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({mode})
-  }).catch(()=>{});
+function setMode(mode) {
+  // 先更新 UI，再发请求（避免 await 阻塞 UI 响应）
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('mode' + mode.charAt(0).toUpperCase() + mode.slice(1)).classList.add('active');
   if (navigator.vibrate) navigator.vibrate(15);
+  fetch('/api/mode', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mode})
+  }).catch(()=>{});
 }
 
 // ===== 摄像头切换 =====
-async function switchCamera(source) {
-  await fetch('/api/camera', {
+function switchCamera(source) {
+  // 先更新 UI，再发请求
+  document.getElementById('csiBtn').classList.toggle('active', source==='csi');
+  document.getElementById('usbBtn').classList.toggle('active', source==='usb');
+  if (navigator.vibrate) navigator.vibrate(15);
+  fetch('/api/camera', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({source})
   }).catch(()=>{});
-  document.getElementById('csiBtn').classList.toggle('active', source==='csi');
-  document.getElementById('usbBtn').classList.toggle('active', source==='usb');
 }
 
 // ===== 距离轮询 =====
