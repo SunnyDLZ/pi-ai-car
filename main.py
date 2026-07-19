@@ -27,7 +27,7 @@ from voice import VoiceOutput, VoiceInput
 from ai_vision import AIVision
 from web_server import WebServer
 from config import OBSTACLE_WARN, OBSTACLE_SLOW, OBSTACLE_STOP, \
-    AUTO_MAX_SPEED, AUTO_SLOW_SPEED, MOTOR_SPEED_MIN, WEB_PORT
+    AUTO_MAX_SPEED, AUTO_SLOW_SPEED, WEB_PORT
 
 
 class AICar:
@@ -129,10 +129,11 @@ class AICar:
             prev_mode = self._mode
             self._mode = mode
 
-            # 进入 auto: 保存用户速度，设为 100 让 y 值直接等于实际占空比
+            # 进入 auto: 保存用户速度，设为 AUTO_MAX_SPEED (30%)
+            # auto-pilot 内 y=100 即满速 → 实际输出 100*30/100 = 30%
             if mode == "auto" and prev_mode != "auto":
                 self._saved_user_speed = self.motor.get_speed()
-                self.motor.set_speed(100)
+                self.motor.set_speed(AUTO_MAX_SPEED)
             # 退出 auto: 恢复用户速度
             elif mode != "auto" and prev_mode == "auto":
                 if self._saved_user_speed is not None:
@@ -150,11 +151,12 @@ class AICar:
     def _auto_pilot_loop(self):
         """自动避障巡游模式
 
-        速度策略 (motor speed=100, y 值=实际占空比):
-          dist >= 50cm → 前进 30% (AUTO_MAX_SPEED)
-          30 <= dist < 50 → 前进 20% (AUTO_SLOW_SPEED)
-          15 <= dist < 30 → 线性减速: 20%→0%, 越近越慢
-          dist < 15cm → 急停 + 后退 + 转向
+        电机 speed 设为 AUTO_MAX_SPEED (30%)，y 值=100 表示满速。
+        实际占空比 = y * speed / 100:
+          dist >= 50cm → y=100, 实际 30%
+          30 <= dist < 50 → y=67, 实际 20%
+          15 <= dist < 30 → y 从 67 线性减到 0, 实际 20%→0%
+          dist < 15cm → 急停 + 后退(y=67=20%) + 转向
         """
         if not getattr(self.motor, "_initialized", False):
             print("[AutoPilot] 电机未初始化，跳过自动巡游线程")
@@ -162,6 +164,10 @@ class AICar:
         if not getattr(self.ultrasonic, "_initialized", False):
             print("[AutoPilot] 超声波未初始化，跳过自动巡游线程")
             return
+
+        # y=100 对应 speed% (30%), y=67 对应 ~20%
+        Y_FULL = 100   # → 实际 30%
+        Y_SLOW = 67    # → 实际 ~20%
 
         print("[AutoPilot] 自动巡游启动")
         while self._running:
@@ -178,26 +184,24 @@ class AICar:
                 # 太近 → 急停 + 后退 + 转向
                 self.motor.stop()
                 self.voice_out.say("前方障碍", lang="zh")
-                self.motor.move(y=-20)
+                self.motor.move(y=-Y_SLOW)  # 后退 20%
                 time.sleep(0.5)
-                self.motor.move(rotation=30)
+                self.motor.move(rotation=Y_SLOW)  # 转向 20%
                 time.sleep(0.3)
             elif dist < OBSTACLE_SLOW:
-                # 15~30cm → 线性减速 (20% → 0%)
+                # 15~30cm → 线性减速 (y: 67→0, 实际 20%→0%)
                 ratio = (dist - OBSTACLE_STOP) / (OBSTACLE_SLOW - OBSTACLE_STOP)
-                speed = int(AUTO_SLOW_SPEED * ratio)
-                if speed < MOTOR_SPEED_MIN:
-                    speed = 0  # 低于起步最小值，直接停
-                print(f"[AutoPilot] 前方 {dist:.0f}cm → 减速 {speed}%")
-                self.motor.move(y=speed)
+                y_val = int(Y_SLOW * ratio)
+                print(f"[AutoPilot] 前方 {dist:.0f}cm → 减速 y={y_val} ({int(y_val*AUTO_MAX_SPEED/100)}%)")
+                self.motor.move(y=y_val)
             elif dist < OBSTACLE_WARN:
                 # 30~50cm → 固定 20% 慢速
-                print(f"[AutoPilot] 前方 {dist:.0f}cm → 慢速 {AUTO_SLOW_SPEED}%")
-                self.motor.move(y=AUTO_SLOW_SPEED)
+                print(f"[AutoPilot] 前方 {dist:.0f}cm → 慢速 y={Y_SLOW} ({AUTO_SLOW_SPEED}%)")
+                self.motor.move(y=Y_SLOW)
             else:
                 # >= 50cm → 安全 30% 前进
-                print(f"[AutoPilot] 前方 {dist:.0f}cm → 巡航 {AUTO_MAX_SPEED}%")
-                self.motor.move(y=AUTO_MAX_SPEED)
+                print(f"[AutoPilot] 前方 {dist:.0f}cm → 巡航 y={Y_FULL} ({AUTO_MAX_SPEED}%)")
+                self.motor.move(y=Y_FULL)
 
             time.sleep(0.2)
 
