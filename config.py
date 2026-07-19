@@ -6,22 +6,24 @@ AI Car - 配置文件
 # ========== GPIO 引脚定义 (BCM编号) ==========
 
 # 电机 - L298N #1 (前轮)
-MOTOR1_FL_IN1 = 17   # 前左轮 IN1
-MOTOR1_FL_IN2 = 18   # 前左轮 IN2
-MOTOR1_FL_ENA = 12   # 前左轮 ENA (PWM)
-
-MOTOR1_FR_IN3 = 22   # 前右轮 IN3
-MOTOR1_FR_IN4 = 23   # 前右轮 IN4
-MOTOR1_FR_ENB = 13   # 前右轮 ENB (PWM)
+# A路输出 → 右前轮 (FR)
+MOTOR1_FR_IN1 = 17   # 右前轮 IN1
+MOTOR1_FR_IN2 = 18   # 右前轮 IN2
+MOTOR1_FR_ENA = 12   # 右前轮 ENA (PWM)
+# B路输出 → 左前轮 (FL)
+MOTOR1_FL_IN3 = 22   # 左前轮 IN3
+MOTOR1_FL_IN4 = 23   # 左前轮 IN4
+MOTOR1_FL_ENB = 13   # 左前轮 ENB (PWM)
 
 # 电机 - L298N #2 (后轮)
-MOTOR2_RL_IN1 = 24   # 后左轮 IN1
-MOTOR2_RL_IN2 = 25   # 后左轮 IN2
-MOTOR2_RL_ENA = 19   # 后左轮 ENA (PWM)
-
-MOTOR2_RR_IN3 = 5    # 后右轮 IN3
-MOTOR2_RR_IN4 = 6    # 后右轮 IN4
-MOTOR2_RR_ENB = 26   # 后右轮 ENB (PWM)
+# A路输出 → 右后轮 (RR)
+MOTOR2_RR_IN1 = 24   # 右后轮 IN1
+MOTOR2_RR_IN2 = 25   # 右后轮 IN2
+MOTOR2_RR_ENA = 19   # 右后轮 ENA (PWM)
+# B路输出 → 左后轮 (RL)
+MOTOR2_RL_IN3 = 5    # 左后轮 IN3
+MOTOR2_RL_IN4 = 6    # 左后轮 IN4
+MOTOR2_RL_ENB = 26   # 左后轮 ENB (PWM)
 
 # 超声波 HY-SRF05 (5针接口: 1=Vcc 2=Trig 3=Echo 4=OUT 5=GND)
 # 注意: 实际模块上的 Vcc 是 5V，Echo 输出也是 5V，需分压后接 GPIO
