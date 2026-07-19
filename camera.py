@@ -23,7 +23,26 @@ class CSICamera:
         self._thread = None
 
     def init(self):
-        """初始化 CSI 摄像头"""
+        """初始化 CSI 摄像头
+
+        仅当检测到树莓派 CSI 接口上有相机模块时才初始化。
+        无 CSI 硬件时直接跳过，避免 Picamera2/libcamera 枚举时
+        误占用 USB 摄像头设备节点导致 USB 摄像头无法打开。
+        """
+        # 检测 CSI 相机模块是否存在 (设备树 i2c 节点)
+        import os
+        csi_found = False
+        for root, dirs, files in os.walk("/sys/bus/i2c/devices"):
+            for name in dirs:
+                if any(s in name.lower() for s in ("imx", "ov", "camera")):
+                    csi_found = True
+                    break
+            if csi_found:
+                break
+        if not csi_found:
+            print("[CSICamera] 未检测到 CSI 相机模块，跳过初始化 (不占用摄像头设备)")
+            return False
+
         try:
             from picamera2 import Picamera2
             self._camera = Picamera2()
@@ -89,7 +108,12 @@ class USBCamera:
     def init(self, camera_id=USB_CAMERA_ID):
         """初始化 USB 摄像头"""
         import cv2
-        self._cap = cv2.VideoCapture(camera_id)
+        # 明确指定 V4L2 后端，避免 OpenCV 的 obsensor (Orbbec) 后端
+        # 误把普通 UVC 摄像头识别为深度相机导致 "Camera index out of range"
+        try:
+            self._cap = cv2.VideoCapture(camera_id, cv2.CAP_V4L2)
+        except Exception:
+            self._cap = cv2.VideoCapture(camera_id)
         if not self._cap.isOpened():
             print(f"[USBCamera] 无法打开摄像头 #{camera_id}")
             return False
