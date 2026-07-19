@@ -203,11 +203,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
   --bg: #0d0d1a; --panel: #16213e; --accent: #e94560;
   --accent2: #0f3460; --text: #eee; --green: #00e676;
   --btn: #1a1a3e; --btn-active: #e94560; --radius: 14px;
-  /* 自适应尺寸单位 — 基于视口短边 vmin */
-  --dpad-btn: min(11vmin, 64px);
-  --gimbal-btn: min(8vmin, 44px);
-  --rotate-w: min(16vmin, 80px);
-  --rotate-h: min(8vmin, 48px);
+  /* 自适应尺寸单位 — 基于视口短边 vmin (放大以利用更多空间) */
+  --dpad-btn: min(15vmin, 88px);
+  --gimbal-btn: min(11vmin, 60px);
+  --rotate-w: min(22vmin, 120px);
+  --rotate-h: min(11vmin, 64px);
 }
 html, body {
   width:100%; height:100%; overflow:hidden;
@@ -262,7 +262,7 @@ html, body {
 
 /* ===== 左栏: 方向控制 (左手) ===== */
 .left-panel {
-  flex:0 0 auto; width:min(26vmin, 220px);
+  flex:3 1 0; min-width:0;
   display:flex; flex-direction:column; align-items:center;
   justify-content:center; gap:6px;
   background:var(--panel); border-radius:var(--radius); padding:6px;
@@ -300,7 +300,7 @@ html, body {
 
 /* ===== 中栏: 摄像头画面 ===== */
 .center-panel {
-  flex:1 1 auto; min-width:0;
+  flex:2 1 0; min-width:0;
   background:#000; border-radius:var(--radius); overflow:hidden;
   position:relative;
   display:flex; align-items:center; justify-content:center;
@@ -326,7 +326,7 @@ html, body {
 
 /* ===== 右栏: 功能控制 (右手) ===== */
 .right-panel {
-  flex:0 0 auto; width:min(26vmin, 220px);
+  flex:3 1 0; min-width:0;
   display:flex; flex-direction:column; gap:4px;
   background:var(--panel); border-radius:var(--radius); padding:6px;
   overflow-y:auto; -webkit-overflow-scrolling:touch;
@@ -429,8 +429,8 @@ html, body {
 /* 超小屏幕适配 */
 @media (max-height: 340px) {
   :root {
-    --dpad-btn: min(10vmin, 52px);
-    --gimbal-btn: min(7vmin, 36px);
+    --dpad-btn: min(13vmin, 68px);
+    --gimbal-btn: min(9vmin, 48px);
   }
   .dpad-label, .section-label, .speed-label { display:none; }
   .divider { margin:1px 0; }
