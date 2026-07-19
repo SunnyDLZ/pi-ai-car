@@ -54,15 +54,37 @@ class MotorController:
             pwm.start(0)
             self._pwm_channels[pin] = pwm
 
+        # 初始化完成后强制停止一次，确保电机上电后处于静止状态
+        # (避免 GPIO 重新初始化时 L298N 使能端瞬间电平导致电机误启动)
+        self.stop()
+
         self._initialized = True
         print("[Motor] 初始化完成")
 
     def stop(self):
-        """紧急停止所有电机"""
-        self._set_motor(MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA, 0)
-        self._set_motor(MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB, 0)
-        self._set_motor(MOTOR2_RR_IN1, MOTOR2_RR_IN2, MOTOR2_RR_ENA, 0)
-        self._set_motor(MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB, 0)
+        """紧急停止所有电机
+
+        同时清除方向引脚 (IN1/IN2=LOW) 并彻底停止 PWM 输出，
+        避免软件 PWM 占空比设为 0 后仍残留微弱驱动导致车不停。
+        """
+        # 1. 清除方向引脚
+        for in1, in2, ena in [
+            (MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA),
+            (MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB),
+            (MOTOR2_RR_IN1, MOTOR2_RR_IN2, MOTOR2_RR_ENA),
+            (MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB),
+        ]:
+            GPIO.output(in1, GPIO.LOW)
+            GPIO.output(in2, GPIO.LOW)
+            if ena in self._pwm_channels:
+                self._pwm_channels[ena].ChangeDutyCycle(0)
+        # 2. 确保 PWM 通道处于激活状态并占空比 0 (重新 start 避免软件 PWM 漂移)
+        for ena, pwm in self._pwm_channels.items():
+            try:
+                pwm.start(0)
+            except Exception:
+                pwm.ChangeDutyCycle(0)
+        print(f"[Motor] STOP 执行, ENA占空比={[round(p._dutycycle,1) if hasattr(p,'_dutycycle') else '?' for p in self._pwm_channels.values()]}", flush=True)
 
     def _set_motor(self, in1, in2, ena, speed_pct):
         """设置单个电机的方向和速度
@@ -92,6 +114,17 @@ class MotorController:
 
         if ena in self._pwm_channels:
             self._pwm_channels[ena].ChangeDutyCycle(pwm_value)
+            # speed=0 时彻底切回普通输出并拉低，确保 L298N 使能端绝对断开
+            if pwm_value == 0:
+                try:
+                    self._pwm_channels[ena].stop()
+                except Exception:
+                    pass
+                GPIO.setup(ena, GPIO.OUT)
+                GPIO.output(ena, GPIO.LOW)
+                # 重新建 PWM 对象备用（下次 move 时直接 ChangeDutyCycle）
+                self._pwm_channels[ena] = GPIO.PWM(ena, MOTOR_PWM_FREQ)
+                self._pwm_channels[ena].start(0)
 
     def set_speed(self, speed_pct):
         """设置全局速度比例"""
@@ -107,11 +140,15 @@ class MotorController:
           FL(前左)   FR(前右)
           RL(后左)   RR(后右)
 
-        注意: RL(左后轮) 电机接线极性相反，此处取反修正
+        使用标准麦克纳姆轮运动学公式 (move() 中计算) 决定各轮目标方向。
+        RL(左后轮) 电机物理接线极性与其他轮相反, 故在调用 _set_motor
+        时对其速度值取反 (硬件层修正), 仅影响 RL 轮的物理转向,
+        不改变运动学语义, 平移/旋转逻辑均正确。
         """
         self._set_motor(MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA, fr)
         self._set_motor(MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB, fl)
         self._set_motor(MOTOR2_RR_IN1, MOTOR2_RR_IN2, MOTOR2_RR_ENA, rr)
+        # RL 物理接线极性相反 → 速度值取反 (硬件层修正, 不影响运动学)
         self._set_motor(MOTOR2_RL_IN3, MOTOR2_RL_IN4, MOTOR2_RL_ENB, -rl)
 
     def _normalize(self, speeds):
@@ -151,6 +188,7 @@ class MotorController:
         rr = int(rr * scale)
 
         self._apply_to_all(fl, fr, rl, rr)
+        print(f"[Motor] MOVE x={x} y={y} r={rotation} -> FL={fl} FR={fr} RL={rl} RR={rr} (speed={self._speed})", flush=True)
 
     # ============== 便捷方向接口 ==============
 

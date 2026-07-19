@@ -155,8 +155,9 @@ class AICar:
 
         print("[AutoPilot] 自动巡游启动")
         while self._running:
+            # 非 auto 模式 (manual/voice) 下，不干预电机 —
+            # 手动控制时车应保持运动，不能在这里 stop 覆盖网页指令
             if self.get_mode() != "auto":
-                self.motor.stop()
                 time.sleep(0.5)
                 continue
 
