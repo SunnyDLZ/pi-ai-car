@@ -22,13 +22,12 @@ class WebServer:
     """Web 遥控服务器"""
 
     def __init__(self, motor: MotorController, servo: ServoGimbal,
-                 camera_csi=None, camera_usb=None,
+                 camera_csi=None,
                  ultrasonic=None, vision=None,
                  on_mode_change=None):
         self._motor = motor
         self._servo = servo
         self._camera_csi = camera_csi
-        self._camera_usb = camera_usb
         self._ultrasonic = ultrasonic
         self._vision = vision
         self._on_mode_change = on_mode_change
@@ -36,7 +35,6 @@ class WebServer:
         self._app = Flask(__name__)
 
         self._mode = "manual"
-        self._cam_source = "csi"
 
         self._latest_frame = None
         self._latest_detections = []
@@ -101,15 +99,6 @@ class WebServer:
         def get_mode():
             return jsonify({"mode": self._mode})
 
-        @app.route("/api/camera", methods=["POST"])
-        def api_camera():
-            data = request.get_json()
-            source = data.get("source", "csi")
-            if source in ("csi", "usb"):
-                self._cam_source = source
-                return jsonify({"status": "ok", "source": source})
-            return jsonify({"status": "error"}), 400
-
         @app.route("/api/detect")
         def api_detect():
             if not self._vision:
@@ -128,7 +117,6 @@ class WebServer:
                 "mode": self._mode,
                 "distance": dist,
                 "speed": self._motor.get_speed(),
-                "camera": self._cam_source
             })
 
         @app.route("/video_feed")
@@ -139,10 +127,8 @@ class WebServer:
             )
 
     def _get_current_frame(self):
-        if self._cam_source == "csi" and self._camera_csi:
+        if self._camera_csi:
             return self._camera_csi.capture()
-        elif self._cam_source == "usb" and self._camera_usb:
-            return self._camera_usb.capture()
         return None
 
     def _generate_frames(self):
@@ -460,8 +446,6 @@ html, body {
       <span></span>
     </div>
     <div class="cam-overlay-bottom">
-      <button class="cam-btn active" id="csiBtn" onclick="switchCamera('csi')">CSI</button>
-      <button class="cam-btn" id="usbBtn" onclick="switchCamera('usb')">USB</button>
     </div>
   </div>
 
@@ -666,18 +650,6 @@ function setMode(mode) {
   fetch('/api/mode', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({mode})
-  }).catch(()=>{});
-}
-
-// ===== 摄像头切换 =====
-function switchCamera(source) {
-  // 先更新 UI，再发请求
-  document.getElementById('csiBtn').classList.toggle('active', source==='csi');
-  document.getElementById('usbBtn').classList.toggle('active', source==='usb');
-  if (navigator.vibrate) navigator.vibrate(15);
-  fetch('/api/camera', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({source})
   }).catch(()=>{});
 }
 

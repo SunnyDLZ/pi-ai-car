@@ -3,7 +3,7 @@ main.py - AI 小车主程序入口
 
 集成了:
   - 麦克纳姆轮全向移动
-  - CSI/USB 摄像头 + 云台舵机
+  - CSI 摄像头 + 云台舵机
   - 超声波避障
   - Web 遥控界面
   - AI 视觉识别
@@ -22,7 +22,7 @@ import threading
 from motor import MotorController
 from servo import ServoGimbal
 from ultrasonic import Ultrasonic
-from camera import CSICamera, USBCamera
+from camera import CSICamera
 from voice import VoiceOutput, VoiceInput
 from ai_vision import AIVision
 from web_server import WebServer
@@ -37,7 +37,6 @@ class AICar:
         self.servo = ServoGimbal()
         self.ultrasonic = Ultrasonic()
         self.camera_csi = CSICamera()
-        self.camera_usb = USBCamera()
         self.voice_out = VoiceOutput()
         self.voice_in = VoiceInput()
         self.vision = AIVision()
@@ -83,13 +82,6 @@ class AICar:
         except Exception as e:
             print(f"[!] CSI 摄像头初始化失败: {e}")
 
-        # USB 摄像头
-        try:
-            if self.camera_usb.init():
-                self.camera_usb.start()
-        except Exception as e:
-            print(f"[!] USB 摄像头初始化失败: {e}")
-
         # AI 视觉
         try:
             self.vision.init()
@@ -112,7 +104,6 @@ class AICar:
             motor=self.motor,
             servo=self.servo,
             camera_csi=self.camera_csi,
-            camera_usb=self.camera_usb,
             ultrasonic=self.ultrasonic,
             vision=self.vision,
             on_mode_change=self.set_mode,
@@ -288,7 +279,6 @@ class AICar:
         if getattr(self.ultrasonic, "_initialized", False):
             self.ultrasonic.cleanup()
         self.camera_csi.cleanup()
-        self.camera_usb.cleanup()
         # 仅在语音输出已初始化时才播报
         try:
             if self.voice_out._tts_engine:

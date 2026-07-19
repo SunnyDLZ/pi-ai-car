@@ -64,10 +64,10 @@ class MotorController:
     def stop(self):
         """紧急停止所有电机
 
-        同时清除方向引脚 (IN1/IN2=LOW) 并彻底停止 PWM 输出，
-        避免软件 PWM 占空比设为 0 后仍残留微弱驱动导致车不停。
+        清除方向引脚 (IN1/IN2=LOW) 并将 PWM 占空比设为 0。
+        不销毁/重建 PWM 对象，避免 RPi.GPIO 软件 PWM 重建时的时序问题
+        导致某些轮子（尤其是硬件 PWM 引脚 BCM12）启动延迟或失效。
         """
-        # 1. 清除方向引脚
         for in1, in2, ena in [
             (MOTOR1_FR_IN1, MOTOR1_FR_IN2, MOTOR1_FR_ENA),
             (MOTOR1_FL_IN3, MOTOR1_FL_IN4, MOTOR1_FL_ENB),
@@ -78,13 +78,7 @@ class MotorController:
             GPIO.output(in2, GPIO.LOW)
             if ena in self._pwm_channels:
                 self._pwm_channels[ena].ChangeDutyCycle(0)
-        # 2. 确保 PWM 通道处于激活状态并占空比 0 (重新 start 避免软件 PWM 漂移)
-        for ena, pwm in self._pwm_channels.items():
-            try:
-                pwm.start(0)
-            except Exception:
-                pwm.ChangeDutyCycle(0)
-        print(f"[Motor] STOP 执行, ENA占空比={[round(p._dutycycle,1) if hasattr(p,'_dutycycle') else '?' for p in self._pwm_channels.values()]}", flush=True)
+        print("[Motor] STOP", flush=True)
 
     def _set_motor(self, in1, in2, ena, speed_pct):
         """设置单个电机的方向和速度
@@ -108,23 +102,13 @@ class MotorController:
             GPIO.output(in2, GPIO.LOW)
 
         # 低于最小值时直接关闭 (避免电机嗡嗡叫)
-        pwm_value = speed_pct
-        if 0 < pwm_value < MOTOR_SPEED_MIN:
-            pwm_value = 0
+        if 0 < speed_pct < MOTOR_SPEED_MIN:
+            speed_pct = 0
 
+        # 只用 ChangeDutyCycle，不销毁/重建 PWM 对象
+        # (RPi.GPIO 软件 PWM 重建有时序问题，尤其 BCM12 硬件 PWM 引脚)
         if ena in self._pwm_channels:
-            self._pwm_channels[ena].ChangeDutyCycle(pwm_value)
-            # speed=0 时彻底切回普通输出并拉低，确保 L298N 使能端绝对断开
-            if pwm_value == 0:
-                try:
-                    self._pwm_channels[ena].stop()
-                except Exception:
-                    pass
-                GPIO.setup(ena, GPIO.OUT)
-                GPIO.output(ena, GPIO.LOW)
-                # 重新建 PWM 对象备用（下次 move 时直接 ChangeDutyCycle）
-                self._pwm_channels[ena] = GPIO.PWM(ena, MOTOR_PWM_FREQ)
-                self._pwm_channels[ena].start(0)
+            self._pwm_channels[ena].ChangeDutyCycle(speed_pct)
 
     def set_speed(self, speed_pct):
         """设置全局速度比例"""

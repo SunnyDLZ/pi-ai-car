@@ -95,10 +95,6 @@ CSI_FRAME_WIDTH = 640
 CSI_FRAME_HEIGHT = 480
 CSI_FRAME_RATE = 30
 
-USB_FRAME_WIDTH = 640
-USB_FRAME_HEIGHT = 480
-USB_CAMERA_ID = 0  # /dev/video0
-
 # ========== Web 服务 ==========
 
 WEB_HOST = "0.0.0.0"
