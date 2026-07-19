@@ -205,7 +205,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
   --btn: #1a1a3e; --btn-active: #e94560; --radius: 14px;
   /* 自适应尺寸单位 — 基于视口短边 vmin (D-Pad进一步放大) */
   --dpad-btn: min(22vmin, 130px);
-  --gimbal-btn: min(11vmin, 60px);
+  --gimbal-btn: min(14vmin, 76px);
   --rotate-w: min(22vmin, 120px);
   --rotate-h: min(11vmin, 64px);
 }
@@ -413,7 +413,7 @@ html, body {
 @media (max-height: 340px) {
   :root {
     --dpad-btn: min(18vmin, 96px);
-    --gimbal-btn: min(9vmin, 48px);
+    --gimbal-btn: min(11vmin, 56px);
   }
   .dpad-label, .section-label, .speed-label { display:none; }
   .divider { margin:1px 0; }
@@ -495,12 +495,11 @@ html, body {
 
     <div class="divider"></div>
 
-    <!-- 测距 + 云台 -->
+    <!-- 测距 + 云台 (水平排列: 测距在左, 云台在右) -->
     <div class="section-label">云台控制</div>
-    <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:4px;">
-      <span class="dist-badge" id="distDisplay" style="background:var(--accent2);padding:3px 10px;border-radius:16px;font-size:12px;color:var(--green);white-space:nowrap;">📡 --</span>
-    </div>
-    <div class="gimbal-grid">
+    <div style="display:flex;align-items:center;justify-content:center;gap:8px;">
+      <span class="dist-badge" id="distDisplay" style="background:var(--accent2);padding:6px 10px;border-radius:12px;font-size:13px;color:var(--green);white-space:nowrap;writing-mode:vertical-rl;text-orientation:upright;">📡 --</span>
+      <div class="gimbal-grid">
       <div></div>
       <button ontouchstart="gimbalTilt(-10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(-10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↑</button>
       <div></div>
@@ -511,6 +510,7 @@ html, body {
       <button ontouchstart="gimbalTilt(10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↓</button>
       <div></div>
     </div>
+    </div><!-- /测距+云台 flex -->
 
     <div class="divider"></div>
 
