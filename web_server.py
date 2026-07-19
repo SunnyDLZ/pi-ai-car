@@ -532,6 +532,7 @@ let currentPan = 90, currentTilt = 90;
 let activeDirBtn = null;
 let activeRotateBtn = null;
 let speedSendTimer = null;
+let currentMove = {x:0, y:0, rotation:0};  // 当前运动方向，sendSpeed 用它保持运动
 
 // ===== 点击切换方向 (点一下持续运动，再点一下停止) =====
 function toggleDir(x, y, r, btn) {
@@ -553,6 +554,7 @@ function toggleDir(x, y, r, btn) {
   // 激活新方向
   btn.classList.add('active');
   activeDirBtn = btn;
+  currentMove = {x, y, rotation:r};  // 记住当前方向
 
   fetch('/api/control', {
     method:'POST',
@@ -581,6 +583,7 @@ function toggleRotate(x, y, r, btn) {
   // 激活新旋转
   btn.classList.add('active');
   activeRotateBtn = btn;
+  currentMove = {x, y, rotation:r};  // 记住当前方向
 
   fetch('/api/control', {
     method:'POST',
@@ -593,6 +596,7 @@ function stopCar(btn) {
   if (btn) { btn.classList.add('active'); if(navigator.vibrate) navigator.vibrate(20); setTimeout(()=>btn.classList.remove('active'),200); }
   if (activeDirBtn) { activeDirBtn.classList.remove('active'); activeDirBtn = null; }
   if (activeRotateBtn) { activeRotateBtn.classList.remove('active'); activeRotateBtn = null; }
+  currentMove = {x:0, y:0, rotation:0};  // 清除方向
   fetch('/api/stop', {method:'POST'}).catch(()=>{});
 }
 
@@ -614,10 +618,11 @@ function commitSpeed() {
 }
 
 function sendSpeed(s) {
+  // 用当前运动方向 + 新速度发送，不会意外停车
   fetch('/api/control', {
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({x:0, y:0, rotation:0, speed:s})
+    body: JSON.stringify({x:currentMove.x, y:currentMove.y, rotation:currentMove.rotation, speed:s})
   }).catch(()=>{});
 }
 
