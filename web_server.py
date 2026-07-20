@@ -51,6 +51,11 @@ class WebServer:
 
         @app.route("/api/control", methods=["POST"])
         def control():
+            # 非 manual 模式下忽略手动控制请求：
+            # 1) 避免覆盖自动模式的 30% 安全限速 (set_speed 会把速度改成滑块值)
+            # 2) 避免与 auto-pilot / 语音控制的电机指令冲突
+            if self._mode != "manual":
+                return jsonify({"status": "ignored", "mode": self._mode})
             data = request.get_json()
             x = float(data.get("x", 0))
             y = float(data.get("y", 0))
@@ -696,22 +701,44 @@ const keyMap = {
   'x':[70,-70,0], 'X':[70,-70,0],
 };
 const pressedKeys = new Set();
+// 合成所有按下的移动键为单一指令，支持多键组合 (如 W+D 斜向)
+function sendCurrentKeys() {
+  let x = 0, y = 0, r = 0;
+  for (const key of pressedKeys) {
+    if (key in keyMap) {
+      const [kx, ky, kr] = keyMap[key];
+      x += kx; y += ky; r += kr;
+    }
+  }
+  // 叠加后限制在 [-100, 100]，保持方向比例
+  const maxAbs = Math.max(Math.abs(x), Math.abs(y), Math.abs(r));
+  if (maxAbs > 100) {
+    x = Math.round(x * 100 / maxAbs);
+    y = Math.round(y * 100 / maxAbs);
+    r = Math.round(r * 100 / maxAbs);
+  }
+  if (x === 0 && y === 0 && r === 0) {
+    fetch('/api/stop', {method:'POST'}).catch(()=>{});
+  } else {
+    fetch('/api/control', {method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({x, y, rotation:r, speed:speedValue})}).catch(()=>{});
+  }
+}
 document.addEventListener('keydown', e => {
   if (e.key === ' ') { e.preventDefault(); stopCar(null); return; }
   if (pressedKeys.has(e.key)) return;
   if (e.key in keyMap) {
     e.preventDefault();
     pressedKeys.add(e.key);
-    const [x,y,r] = keyMap[e.key];
-    fetch('/api/control', {method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({x,y,rotation:r,speed:speedValue})}).catch(()=>{});
+    sendCurrentKeys();
   }
 });
 document.addEventListener('keyup', e => {
   if (e.key in keyMap) {
     e.preventDefault();
     pressedKeys.delete(e.key);
-    stopCar(null);
+    // 松开一键后发送剩余按键的合成指令，而非直接停车
+    sendCurrentKeys();
   }
 });
 </script>

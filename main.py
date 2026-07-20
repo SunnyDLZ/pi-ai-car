@@ -142,6 +142,9 @@ class AICar:
 
         print(f"[Main] 切换到模式: {mode}")
         if mode == "voice":
+            # 语音模式无自动控制，立即停车等待语音指令
+            # (否则切换前手动方向指令会一直保持运动)
+            self.motor.stop()
             self.voice_out.say("语音模式已开启")
         elif mode == "auto":
             self.voice_out.say("自动模式已开启")
@@ -184,8 +187,14 @@ class AICar:
                 # 太近 → 急停 + 后退 + 转向
                 self.motor.stop()
                 self.voice_out.say("前方障碍", lang="zh")
+                # 避障动作间隔较长，每步前检查模式，避免切手动后仍继续后退/转向
+                if self.get_mode() != "auto":
+                    continue
                 self.motor.move(y=-Y_SLOW)  # 后退 20%
                 time.sleep(0.5)
+                if self.get_mode() != "auto":
+                    self.motor.stop()
+                    continue
                 self.motor.move(rotation=Y_SLOW)  # 转向 20%
                 time.sleep(0.3)
             elif dist < OBSTACLE_SLOW:
@@ -208,7 +217,7 @@ class AICar:
     def _voice_control_loop(self):
         """语音控制循环"""
         print("[VoiceControl] 语音控制启动")
-        self.voice_out.say("你好，请说出指令")
+        # 不在开机时播报，进入语音模式时由 set_mode() 播报"语音模式已开启"
 
         while self._running:
             if self.get_mode() != "voice":

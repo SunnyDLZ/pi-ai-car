@@ -16,6 +16,7 @@ class VoiceOutput:
     def __init__(self):
         self._speaking = False
         self._tts_engine = None
+        self._tts_proc = None  # 当前 TTS 子进程，用于切歌时终止上一句
 
     def init(self):
         """检查 TTS 引擎"""
@@ -57,18 +58,26 @@ class VoiceOutput:
         if not self._tts_engine:
             return
 
+        # 终止上一个 TTS 进程，避免连续播报 (如"前方障碍") 时声音重叠
+        if self._tts_proc is not None:
+            try:
+                self._tts_proc.terminate()
+            except Exception:
+                pass
+            self._tts_proc = None
+
         self._speaking = True
 
         if self._tts_engine == "espeak":
             if lang == "zh":
                 # espeak 中文需要指定 zh 语种
-                subprocess.Popen(
+                self._tts_proc = subprocess.Popen(
                     ["espeak", "-v", "zh+f3", "-s", "140", "-p", "50", text],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
             else:
-                subprocess.Popen(
+                self._tts_proc = subprocess.Popen(
                     ["espeak", "-v", "en+f3", "-s", "150", "-p", "50", text],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
