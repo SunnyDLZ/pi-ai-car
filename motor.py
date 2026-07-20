@@ -211,13 +211,15 @@ class MotorController:
         """左旋转"""
         if speed is not None:
             self.set_speed(speed)
-        self.move(rotation=-60)
+        # rotation 用满幅 100，确保低速时各轮占空比 = speed% >= MOTOR_SPEED_MIN(20%)
+        # 否则 rotation=-60 + speed=20% → 单轮 12% < 20% 会被 _set_motor 过滤为 0
+        self.move(rotation=-100)
 
     def rotate_right(self, speed=None):
         """右旋转"""
         if speed is not None:
             self.set_speed(speed)
-        self.move(rotation=60)
+        self.move(rotation=100)
 
     def forward_left(self, speed=None):
         """前进+左移 (斜向)"""

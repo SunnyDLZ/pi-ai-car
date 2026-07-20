@@ -76,8 +76,17 @@ class WebServer:
 
         @app.route("/api/stop", methods=["POST"])
         def api_stop():
+            # 急停是最高优先级的安全操作，任何模式都必须响应。
+            # 若当前在 auto/voice 模式下只调 motor.stop()，auto-pilot 线程
+            # 会在 0.2s 内再次 move() 覆盖停车指令，车继续动。
+            # 解决: 先切回 manual (会触发 AICar.set_mode 内的 motor.stop)，
+            # 再 stop() 一次确保电机立即停转。
+            if self._mode != "manual":
+                self._mode = "manual"
+                if self._on_mode_change:
+                    self._on_mode_change("manual")
             self._motor.stop()
-            return jsonify({"status": "ok"})
+            return jsonify({"status": "ok", "mode": "manual"})
 
         @app.route("/api/servo", methods=["POST"])
         def api_servo():
@@ -474,10 +483,10 @@ html, body {
     <!-- 旋转 -->
     <div class="section-label">原地旋转</div>
     <div class="rotate-row">
-      <button class="rotate-btn" ontouchstart="event.preventDefault();toggleRotate(0,0,-70,this)" onclick="toggleRotate(0,0,-70,this)">
+      <button class="rotate-btn" ontouchstart="event.preventDefault();toggleRotate(0,0,-100,this)" onclick="toggleRotate(0,0,-100,this)">
         <span class="icon">⟲</span>左转
       </button>
-      <button class="rotate-btn" ontouchstart="event.preventDefault();toggleRotate(0,0,70,this)" onclick="toggleRotate(0,0,70,this)">
+      <button class="rotate-btn" ontouchstart="event.preventDefault();toggleRotate(0,0,100,this)" onclick="toggleRotate(0,0,100,this)">
         <span class="icon">⟳</span>右转
       </button>
     </div>
