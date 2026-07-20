@@ -140,16 +140,18 @@ class AICar:
                     self.motor.set_speed(self._saved_user_speed)
                     self._saved_user_speed = None
 
+            # 非 auto 模式: 在 _mode_lock 锁内停车
+            # 与 _auto_pilot_loop 的"检查模式+执行电机"形成互斥，
+            # 避免 set_mode 的 stop() 被随后的 auto-pilot move() 覆盖
+            if mode != "auto":
+                self.motor.stop()
+
         print(f"[Main] 切换到模式: {mode}")
+        # 语音播报在锁外 (espeak 子进程启动慢，避免长时间持锁阻塞 auto-pilot)
         if mode == "voice":
-            # 语音模式无自动控制，立即停车等待语音指令
-            # (否则切换前手动方向指令会一直保持运动)
-            self.motor.stop()
             self.voice_out.say("语音模式已开启")
         elif mode == "auto":
             self.voice_out.say("自动模式已开启")
-        else:
-            self.motor.stop()
 
     def _auto_pilot_loop(self):
         """自动避障巡游模式
@@ -183,36 +185,50 @@ class AICar:
                 time.sleep(0.1)
                 continue
 
-            if dist < OBSTACLE_STOP:
-                # 太近 → 急停 + 后退 + 转向
-                self.motor.stop()
-                self.voice_out.say("前方障碍", lang="zh")
-                # 避障动作间隔较长，每步前检查模式，避免切手动后仍继续后退/转向
-                if self.get_mode() != "auto":
+            # 在 _mode_lock 下"检查模式 + 执行电机指令"，与 set_mode() 互斥
+            # 确保 set_mode 的 stop() 不会插入到"检查通过"和"move()"之间
+            # 否则会出现: 检查通过→set_mode停车→auto-pilot又move 的危险竞态
+            say_obstacle = False
+            retreat = False
+            with self._mode_lock:
+                if self._mode != "auto":
                     continue
-                self.motor.move(y=-Y_SLOW)  # 后退 20%
-                time.sleep(0.5)
-                if self.get_mode() != "auto":
+                if dist < OBSTACLE_STOP:
+                    # 太近 → 急停 + 后退 + 转向
                     self.motor.stop()
-                    continue
-                self.motor.move(rotation=Y_SLOW)  # 转向 20%
-                time.sleep(0.3)
-            elif dist < OBSTACLE_SLOW:
-                # 15~30cm → 线性减速 (y: 67→0, 实际 20%→0%)
-                ratio = (dist - OBSTACLE_STOP) / (OBSTACLE_SLOW - OBSTACLE_STOP)
-                y_val = int(Y_SLOW * ratio)
-                print(f"[AutoPilot] 前方 {dist:.0f}cm → 减速 y={y_val} ({int(y_val*AUTO_MAX_SPEED/100)}%)")
-                self.motor.move(y=y_val)
-            elif dist < OBSTACLE_WARN:
-                # 30~50cm → 固定 20% 慢速
-                print(f"[AutoPilot] 前方 {dist:.0f}cm → 慢速 y={Y_SLOW} ({AUTO_SLOW_SPEED}%)")
-                self.motor.move(y=Y_SLOW)
-            else:
-                # >= 50cm → 安全 30% 前进
-                print(f"[AutoPilot] 前方 {dist:.0f}cm → 巡航 y={Y_FULL} ({AUTO_MAX_SPEED}%)")
-                self.motor.move(y=Y_FULL)
+                    say_obstacle = True
+                    retreat = True
+                elif dist < OBSTACLE_SLOW:
+                    # 15~30cm → 线性减速 (y: 67→0, 实际 20%→0%)
+                    ratio = (dist - OBSTACLE_STOP) / (OBSTACLE_SLOW - OBSTACLE_STOP)
+                    y_val = int(Y_SLOW * ratio)
+                    print(f"[AutoPilot] 前方 {dist:.0f}cm → 减速 y={y_val} ({int(y_val*AUTO_MAX_SPEED/100)}%)")
+                    self.motor.move(y=y_val)
+                elif dist < OBSTACLE_WARN:
+                    # 30~50cm → 固定 20% 慢速
+                    print(f"[AutoPilot] 前方 {dist:.0f}cm → 慢速 y={Y_SLOW} ({AUTO_SLOW_SPEED}%)")
+                    self.motor.move(y=Y_SLOW)
+                else:
+                    # >= 50cm → 安全 30% 前进
+                    print(f"[AutoPilot] 前方 {dist:.0f}cm → 巡航 y={Y_FULL} ({AUTO_MAX_SPEED}%)")
+                    self.motor.move(y=Y_FULL)
 
-            time.sleep(0.2)
+            # 锁外: 语音播报 (espeak 子进程慢) + sleep (避障动作需持续时间，但不持锁)
+            if say_obstacle:
+                self.voice_out.say("前方障碍", lang="zh")
+
+            if retreat:
+                # 后退持续 0.5s
+                time.sleep(0.5)
+                # 转向前再次在锁内检查模式，避免切手动后还转向
+                with self._mode_lock:
+                    if self._mode != "auto":
+                        self.motor.stop()
+                        continue
+                    self.motor.move(rotation=Y_SLOW)  # 转向 20%
+                time.sleep(0.3)
+            else:
+                time.sleep(0.2)
 
     def _voice_control_loop(self):
         """语音控制循环"""
