@@ -65,7 +65,9 @@ class AIVision:
         h, w = frame.shape[:2]
 
         # 构建 blob 输入
-        blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5)
+        # picamera2 返回 RGB，而 Caffe MobileNet SSD 模型在 BGR 上训练 (OpenCV 默认)。
+        # swapRB=True 让 blobFromImage 内部交换 R/B 通道，匹配模型预期输入。
+        blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5, swapRB=True)
         self._net.setInput(blob)
         detections = self._net.forward()
 

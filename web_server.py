@@ -9,7 +9,6 @@ import json
 import base64
 import threading
 import time
-import io
 import numpy as np
 from flask import Flask, Response, render_template_string, request, jsonify
 
@@ -42,6 +41,15 @@ class WebServer:
 
         self._register_routes()
 
+    def set_mode(self, mode):
+        """外部同步模式状态 (不触发回调，避免递归)
+
+        供 AICar.set_mode 在语音/自动切换模式时同步 WebServer._mode，
+        使 /api/control 的模式检查和前端按钮状态保持正确。
+        """
+        if mode in ("manual", "auto", "voice"):
+            self._mode = mode
+
     def _register_routes(self):
         app = self._app
 
@@ -56,7 +64,7 @@ class WebServer:
             # 2) 避免与 auto-pilot / 语音控制的电机指令冲突
             if self._mode != "manual":
                 return jsonify({"status": "ignored", "mode": self._mode})
-            data = request.get_json()
+            data = request.get_json(silent=True) or {}
             x = float(data.get("x", 0))
             y = float(data.get("y", 0))
             r = float(data.get("rotation", 0))
@@ -73,7 +81,10 @@ class WebServer:
 
         @app.route("/api/servo", methods=["POST"])
         def api_servo():
-            data = request.get_json()
+            # 舵机未初始化时返回错误，避免 AttributeError 崩溃
+            if not getattr(self._servo, "_initialized", False):
+                return jsonify({"status": "error", "msg": "舵机未初始化"}), 503
+            data = request.get_json(silent=True) or {}
             pan = data.get("pan")
             tilt = data.get("tilt")
             if pan is not None:
@@ -91,7 +102,7 @@ class WebServer:
 
         @app.route("/api/mode", methods=["POST"])
         def api_mode():
-            data = request.get_json()
+            data = request.get_json(silent=True) or {}
             mode = data.get("mode", "manual")
             if mode in ("manual", "auto", "voice"):
                 self._mode = mode
@@ -677,6 +688,20 @@ async function updateDistance() {
   } catch(e) {}
 }
 setInterval(updateDistance, 800);
+
+// ===== 模式同步轮询 =====
+// 语音/自动模式切换会改后端模式状态，前端需轮询保持按钮高亮一致
+async function syncMode() {
+  try {
+    const r = await fetch('/api/mode');
+    const d = await r.json();
+    const mode = d.mode;
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+    const btn = document.getElementById('mode' + mode.charAt(0).toUpperCase() + mode.slice(1));
+    if (btn) btn.classList.add('active');
+  } catch(e) {}
+}
+setInterval(syncMode, 1000);
 
 // ===== 防止触摸滚动/缩放 (但不阻止滑块拖动) =====
 document.addEventListener('touchmove', function(e) {

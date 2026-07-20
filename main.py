@@ -143,10 +143,14 @@ class AICar:
             # 非 auto 模式: 在 _mode_lock 锁内停车
             # 与 _auto_pilot_loop 的"检查模式+执行电机"形成互斥，
             # 避免 set_mode 的 stop() 被随后的 auto-pilot move() 覆盖
-            if mode != "auto":
-                self.motor.stop()
+            # 进入 auto 也停车: 防止上一模式残留的运动指令在 auto-pilot 接管前继续执行
+            self.motor.stop()
 
         print(f"[Main] 切换到模式: {mode}")
+        # 同步 WebServer._mode (语音切换模式时 web 端模式状态需保持一致,
+        # 否则 /api/control 的模式检查会拒绝手动控制请求)
+        if self.web is not None:
+            self.web.set_mode(mode)
         # 语音播报在锁外 (espeak 子进程启动慢，避免长时间持锁阻塞 auto-pilot)
         if mode == "voice":
             self.voice_out.say("语音模式已开启")
@@ -182,6 +186,11 @@ class AICar:
 
             dist = self.ultrasonic.measure()
             if dist < 0:
+                # 测距失败 → 立即停车 (传感器异常时继续移动很危险)
+                with self._mode_lock:
+                    if self._mode == "auto":
+                        self.motor.stop()
+                print("[AutoPilot] 测距失败，已停车")
                 time.sleep(0.1)
                 continue
 
@@ -218,7 +227,12 @@ class AICar:
                 self.voice_out.say("前方障碍", lang="zh")
 
             if retreat:
-                # 后退持续 0.5s
+                # 后退 0.5s (此前 bug: 只有 stop 没有 move(y<0), 车原地不动)
+                with self._mode_lock:
+                    if self._mode != "auto":
+                        self.motor.stop()
+                        continue
+                    self.motor.move(y=-Y_SLOW)  # 后退 20%
                 time.sleep(0.5)
                 # 转向前再次在锁内检查模式，避免切手动后还转向
                 with self._mode_lock:
