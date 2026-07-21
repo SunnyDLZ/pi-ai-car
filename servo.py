@@ -20,20 +20,30 @@ class ServoGimbal:
         self._pan_angle = SERVO_PAN_CENTER
         self._tilt_angle = SERVO_TILT_CENTER
         self._initialized = False
+        self._scan_running = False  # scan() 中断标志 (避免云台扫视期间被外部 pan/tilt 抢占)
 
     def init(self):
         """连接 pigpio 守护进程并初始化舵机"""
+        if self._initialized:
+            return  # 重入保护 (main.init_all 可能因异常重试)
+
         self._pi = pigpio.pi()
         if not self._pi.connected:
+            self._pi = None
             raise RuntimeError("[Servo] 无法连接到 pigpio 守护进程！请先启动: sudo pigpiod")
 
         # set_servo_pulsewidth 内部自行管理 PWM，无需手动设置 range/frequency
-
-        # 归中
-        self.pan(SERVO_PAN_CENTER)
-        self.tilt(SERVO_TILT_CENTER)
-
+        # 先标记已初始化，再归中 (pan/tilt 内部有 _initialized 防护)
         self._initialized = True
+        try:
+            self.pan(SERVO_PAN_CENTER)
+            self.tilt(SERVO_TILT_CENTER)
+        except Exception as e:
+            # 归中失败不致命 (pigpio 已连接)，回滚 _initialized 避免后续 pan/tilt 崩溃
+            print(f"[Servo] 归中失败: {e}")
+            self._initialized = False
+            raise
+
         print("[Servo] 云台舵机初始化完成")
 
     @staticmethod
@@ -57,7 +67,12 @@ class ServoGimbal:
 
         Args:
             angle: 0~180, 左~右
+
+        Returns:
+            int: 实际设置的角度；未初始化时返回 None
         """
+        if not self._initialized or not self._pi:
+            return None
         angle = max(SERVO_PAN_MIN, min(SERVO_PAN_MAX, angle))
         pulse = self._angle_to_pulse(angle)
         self._pi.set_servo_pulsewidth(SERVO_PAN_PIN, pulse)
@@ -69,7 +84,12 @@ class ServoGimbal:
 
         Args:
             angle: 0~180, 上~下
+
+        Returns:
+            int: 实际设置的角度；未初始化时返回 None
         """
+        if not self._initialized or not self._pi:
+            return None
         angle = max(SERVO_TILT_MIN, min(SERVO_TILT_MAX, angle))
         pulse = self._angle_to_pulse(angle)
         self._pi.set_servo_pulsewidth(SERVO_TILT_PIN, pulse)
@@ -93,20 +113,43 @@ class ServoGimbal:
         Args:
             step: 步进角度
             delay: 每步延时 (秒)
+
+        Returns:
+            bool: 是否完整扫视 (被中断返回 False)
         """
-        for angle in range(SERVO_PAN_MIN, SERVO_PAN_MAX + 1, step):
-            self.pan(angle)
-            time.sleep(delay)
-        for angle in range(SERVO_PAN_MAX, SERVO_PAN_MIN - 1, -step):
-            self.pan(angle)
-            time.sleep(delay)
-        self.pan(SERVO_PAN_CENTER)
+        if not self._initialized:
+            return False
+        self._scan_running = True
+        try:
+            for angle in range(SERVO_PAN_MIN, SERVO_PAN_MAX + 1, step):
+                if not self._scan_running:
+                    return False
+                self.pan(angle)
+                time.sleep(delay)
+            for angle in range(SERVO_PAN_MAX, SERVO_PAN_MIN - 1, -step):
+                if not self._scan_running:
+                    return False
+                self.pan(angle)
+                time.sleep(delay)
+            self.pan(SERVO_PAN_CENTER)
+            return True
+        finally:
+            self._scan_running = False
+
+    def stop_scan(self):
+        """中断正在进行的扫视"""
+        self._scan_running = False
 
     def cleanup(self):
         """释放舵机 PWM"""
+        self._scan_running = False
         if self._pi:
-            self._pi.set_servo_pulsewidth(SERVO_PAN_PIN, 0)
-            self._pi.set_servo_pulsewidth(SERVO_TILT_PIN, 0)
-            self._pi.stop()
+            try:
+                self._pi.set_servo_pulsewidth(SERVO_PAN_PIN, 0)
+                self._pi.set_servo_pulsewidth(SERVO_TILT_PIN, 0)
+                self._pi.stop()
+            except Exception:
+                pass
             self._pi = None
-            print("[Servo] 舵机资源已释放")
+        self._initialized = False
+        print("[Servo] 舵机资源已释放")

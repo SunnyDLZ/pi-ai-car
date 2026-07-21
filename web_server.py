@@ -39,7 +39,6 @@ class WebServer:
 
         self._mode = "manual"
 
-        self._latest_frame = None
         self._latest_detections = []
         self._frame_lock = threading.Lock()
 
@@ -118,10 +117,17 @@ class WebServer:
             data = request.get_json(silent=True) or {}
             mode = data.get("mode", "manual")
             if mode in ("manual", "auto", "voice", "follow"):
-                self._mode = mode
+                # follow 前置检查: 与 AICar.set_mode 一致，避免 WebServer._mode 已改但 AICar 拒绝导致状态不一致
+                if mode == "follow" and self._face_recognizer and not self._face_recognizer.is_ready():
+                    return jsonify({"status": "error",
+                                    "msg": "人脸识别未就绪 (未安装 dlib、模型缺失或主人库为空)"}), 400
+                # 不直接设 self._mode；交给 AICar.set_mode 处理，它会回调 self.set_mode 同步
+                # 这样保证 WebServer._mode 和 AICar._mode 永远一致
                 if self._on_mode_change:
                     self._on_mode_change(mode)
-                return jsonify({"status": "ok", "mode": mode})
+                else:
+                    self._mode = mode
+                return jsonify({"status": "ok", "mode": self._mode})
             return jsonify({"status": "error", "msg": "无效模式"}), 400
 
         @app.route("/api/mode")
@@ -138,10 +144,13 @@ class WebServer:
         @app.route("/api/status")
         def api_status():
             """综合状态接口，减少前端轮询次数"""
+            # 不在此处调用 ultrasonic.measure() — 它会阻塞 50-100ms (5次采样)，
+            # 与 follower 线程竞争超声波锁。改为读 follower/auto-pilot 最近测得的距离。
             dist = -1
-            if self._ultrasonic:
-                d = self._ultrasonic.measure()
-                dist = round(d, 1) if d > 0 else -1
+            if self._follower:
+                st = self._follower.get_state()
+                # follower 状态里有 dist 字段时优先用
+                dist = st.get("distance", -1)
             status = {
                 "mode": self._mode,
                 "distance": dist,
@@ -173,6 +182,8 @@ class WebServer:
             if not name:
                 return jsonify({"status": "error", "msg": "名字不能为空"}), 400
             owner_id = self._face_recognizer.register_owner(name)
+            if owner_id == "exists":
+                return jsonify({"status": "exists", "msg": f"主人 '{name}' 已存在"}), 409
             if owner_id:
                 return jsonify({"status": "ok", "owner_id": owner_id, "name": name})
             return jsonify({"status": "error", "msg": "注册失败"}), 500
@@ -192,7 +203,9 @@ class WebServer:
             if frame is None:
                 return jsonify({"status": "error", "msg": "摄像头未就绪"}), 503
             result = self._face_recognizer.capture_and_save_embedding(owner_id, frame)
-            return jsonify({"status": "ok" if result["ok"] else "error", "msg": result["msg"]})
+            if result["ok"]:
+                return jsonify({"status": "ok", "msg": result["msg"]})
+            return jsonify({"status": "error", "msg": result["msg"]}), 400
 
         @app.route("/api/owner/delete", methods=["POST"])
         def owner_delete():
@@ -202,6 +215,16 @@ class WebServer:
             owner_id = data.get("owner_id")
             if not owner_id:
                 return jsonify({"status": "error", "msg": "缺少 owner_id"}), 400
+            # 如果正在 follow 被删除的主人，先切回 manual 避免车误报"主人走丢了"
+            if self._follower:
+                st = self._follower.get_state()
+                if st.get("following") and st.get("target_name"):
+                    # 找到要删除的主人名字
+                    owners = self._face_recognizer.list_owners()
+                    del_name = next((o["name"] for o in owners if o["id"] == owner_id), None)
+                    if del_name and st.get("target_name") == del_name:
+                        if self._on_mode_change:
+                            self._on_mode_change("manual")
             ok = self._face_recognizer.delete_owner(owner_id)
             return jsonify({"status": "ok" if ok else "error"})
 
@@ -219,6 +242,7 @@ class WebServer:
             )
 
     def _get_current_frame(self):
+        # camera.capture() 内部已有锁，这里直接调用即可
         if self._camera_csi:
             return self._camera_csi.capture()
         return None
@@ -226,41 +250,69 @@ class WebServer:
     def _generate_frames(self):
         import cv2
         while True:
-            frame = self._get_current_frame()
-            if frame is not None:
-                with self._frame_lock:
-                    self._latest_frame = frame.copy()
+            try:
+                frame = self._get_current_frame()
+                if frame is not None:
+                    # auto 模式: 叠加视觉避障分析 + 物体检测
+                    # 注意: 控制线程已在 _auto_pilot_loop 里调过 analyze/detect，
+                    # 这里再调一次是为了 web 端可视化；如性能不足可后续改为读共享缓存
+                    if self._mode == "auto":
+                        if self._vision_obs:
+                            try:
+                                analysis = self._vision_obs.analyze(frame)
+                                if analysis.get("ok"):
+                                    frame = self._vision_obs.draw_overlay(frame, analysis)
+                            except Exception:
+                                pass
+                        if self._vision:
+                            try:
+                                detections = self._vision.detect(frame)
+                                with self._frame_lock:
+                                    self._latest_detections = detections
+                                if detections:
+                                    frame = self._vision.draw_detections(frame, detections)
+                            except Exception:
+                                pass
 
-                # auto 模式: 叠加视觉避障分析 + 物体检测
-                if self._mode == "auto":
-                    if self._vision_obs:
-                        analysis = self._vision_obs.analyze(frame)
-                        if analysis.get("ok"):
-                            frame = self._vision_obs.draw_overlay(frame, analysis)
-                    if self._vision:
-                        detections = self._vision.detect(frame)
-                        with self._frame_lock:
-                            self._latest_detections = detections
-                        if detections:
-                            frame = self._vision.draw_detections(frame, detections)
+                    # follow 模式: 复用 follower 线程的检测结果 (避免重复跑 dlib HOG)
+                    # follower.get_state() 返回 last_faces / last_ids (只读)
+                    elif self._mode == "follow":
+                        if self._face_recognizer and self._face_recognizer.is_ready():
+                            st = self._follower.get_state() if self._follower else {}
+                            faces = st.get("last_faces") or []
+                            ids = st.get("last_ids") or []
+                            if faces:
+                                try:
+                                    frame = self._face_recognizer.draw_detections(frame, faces, ids)
+                                except Exception:
+                                    pass
+                        else:
+                            # 未就绪时在画面上提示
+                            cv2.putText(frame, "Face recognizer not ready",
+                                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.7, (0, 0, 255), 2)
 
-                # follow 模式: 画人脸框和识别结果
-                elif self._mode == "follow" and self._face_recognizer and self._face_recognizer.is_ready():
-                    faces = self._face_recognizer.detect_faces(frame)
-                    if faces:
-                        ids = [self._face_recognizer.identify(f) for f in faces]
-                        frame = self._face_recognizer.draw_detections(frame, faces, ids)
-
-                _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' +
-                       jpeg.tobytes() + b'\r\n')
-            else:
-                blank = np.zeros((240, 320, 3), dtype=np.uint8)
-                _, jpeg = cv2.imencode('.jpg', blank)
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' +
-                       jpeg.tobytes() + b'\r\n')
+                    _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' +
+                           jpeg.tobytes() + b'\r\n')
+                else:
+                    blank = np.zeros((240, 320, 3), dtype=np.uint8)
+                    _, jpeg = cv2.imencode('.jpg', blank)
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' +
+                           jpeg.tobytes() + b'\r\n')
+            except Exception as e:
+                # 单帧失败不能让整个视频流断 (浏览器会重连造成雪崩)
+                print(f"[WebServer] _generate_frames 异常: {e}")
+                try:
+                    blank = np.zeros((240, 320, 3), dtype=np.uint8)
+                    _, jpeg = cv2.imencode('.jpg', blank)
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' +
+                           jpeg.tobytes() + b'\r\n')
+                except Exception:
+                    pass
 
             time.sleep(0.05)
 
@@ -862,17 +914,36 @@ async function refreshOwners() {
     }
     const listEl = document.getElementById('ownerList');
     if (!listEl) return;
+    // 用 DOM API 构造元素，避免 innerHTML 字符串拼接的 XSS 风险
+    // (名字含 <script> 或双引号会破坏 HTML 或注入)
+    listEl.innerHTML = '';
     if (!d.owners || d.owners.length === 0) {
-      listEl.innerHTML = '<div style="color:#666;font-size:0.8em;padding:4px 0;">尚未录入主人</div>';
+      const empty = document.createElement('div');
+      empty.style.cssText = 'color:#666;font-size:0.8em;padding:4px 0;';
+      empty.textContent = '尚未录入主人';
+      listEl.appendChild(empty);
       return;
     }
-    listEl.innerHTML = d.owners.map(o => `
-      <div class="owner-item">
-        <span class="owner-name">${o.name} <small>(${o.samples}样本)</small></span>
-        <button class="owner-capture-btn" onclick="captureOwner('${o.id}','${o.name.replace(/'/g,"\\'")}')">采集</button>
-        <button class="owner-del-btn" onclick="deleteOwner('${o.id}')">删</button>
-      </div>
-    `).join('');
+    d.owners.forEach(o => {
+      const div = document.createElement('div');
+      div.className = 'owner-item';
+      const span = document.createElement('span');
+      span.className = 'owner-name';
+      span.textContent = o.name + ' ';
+      const small = document.createElement('small');
+      small.textContent = `(${o.samples}样本)`;
+      span.appendChild(small);
+      const capBtn = document.createElement('button');
+      capBtn.className = 'owner-capture-btn';
+      capBtn.textContent = '采集';
+      capBtn.addEventListener('click', () => captureOwner(o.id, o.name));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'owner-del-btn';
+      delBtn.textContent = '删';
+      delBtn.addEventListener('click', () => deleteOwner(o.id));
+      div.append(span, capBtn, delBtn);
+      listEl.appendChild(div);
+    });
   } catch(e) {}
 }
 

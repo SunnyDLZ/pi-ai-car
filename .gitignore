@@ -17,22 +17,62 @@ Thumbs.db
 # AI models (large, auto-downloaded)
 models/*.caffemodel
 models/*.prototxt
+models/*.dat
+models/*.bz2
 
 # Logs
 *.log
 
-# 主人库隐私数据 — 人脸 embedding、采集的图像, 绝不上传
+# ====================================================================
+# 隐私数据 — 绝不上传 GitHub
+# ====================================================================
+# 包含但不限于:
+#   - 摄像头拍摄的所有图像 (照片、视频流截图、人脸采集)
+#   - 麦克风采集的所有语音 (录音、识别音频)
+#   - 主人库人脸 embedding 和元数据
+#   - 调试时保存的快照/截图
+#   - 任何含个人生物特征的数据
+# ====================================================================
+
+# 主人库 — 人脸 embedding、采集图像、元数据
 data/owners/*/
 data/owners/*.npy
-data/owners/*.jpg
-data/owners/*.png
-data/owners/*.jpeg
+data/owners/*.json
 !data/owners/.gitkeep
-!data/owners/registry.example.json
 
-# 录入的临时人脸图像
+# 录入临时采集区
 data/captures/
+data/recordings/
+data/snapshots/
+data/debug/
 
-# dlib 人脸模型 (68 点预测器, ~100KB 但属于第三方)
-models/shape_predictor_68_face_landmarks.dat
-models/dlib_face_recognition_resnet_model_v1.dat
+# 麦克风采音文件 (任意位置)
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.aac
+*.aiff
+
+# 摄像头照片/视频文件 (任意位置，除已纳管的 wiring_diagram.png)
+*.jpg
+*.jpeg
+*.png
+!wiring_diagram.png
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+
+# 视频流快照、人脸框截图等调试产物
+snapshots/
+debug/
+tmp/
+*.snapshot.jpg
+
+# 系统运行时产生的本地配置 (可能含路径/凭据)
+.local_config.json
+secrets.json
+.env

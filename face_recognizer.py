@@ -24,6 +24,8 @@ face_recognizer.py - 主人识别模块
   - 主人库为空 → 可识别但所有识别结果都是 "未识别到主人"
 """
 
+from __future__ import annotations
+
 import os
 import json
 import threading
@@ -36,6 +38,12 @@ from config import (
     FACE_MATCH_THRESHOLD,
     OWNER_SAMPLES_PER_PERSON,
 )
+
+# 项目根目录 (用于把 config 里的相对路径转为绝对路径，避免 systemd 启动时 cwd 不对找不到模型)
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_RESOLVED_OWNERS_DIR = OWNERS_DIR if os.path.isabs(OWNERS_DIR) else os.path.join(_BASE_DIR, OWNERS_DIR)
+_RESOLVED_LANDMARK = FACE_LANDMARK_MODEL if os.path.isabs(FACE_LANDMARK_MODEL) else os.path.join(_BASE_DIR, FACE_LANDMARK_MODEL)
+_RESOLVED_RECOGNITION = FACE_RECOGNITION_MODEL if os.path.isabs(FACE_RECOGNITION_MODEL) else os.path.join(_BASE_DIR, FACE_RECOGNITION_MODEL)
 
 
 class FaceRecognizer:
@@ -61,26 +69,31 @@ class FaceRecognizer:
             print("[FaceRecognizer] 安装: pip install dlib face_recognition")
             return False
 
-        # 检查模型文件
-        if not os.path.exists(FACE_LANDMARK_MODEL):
-            print(f"[FaceRecognizer] 缺失模型: {FACE_LANDMARK_MODEL}")
+        # 检查模型文件 (用绝对路径，避免 systemd 启动时 cwd 不对找不到)
+        if not os.path.exists(_RESOLVED_LANDMARK):
+            print(f"[FaceRecognizer] 缺失模型: {_RESOLVED_LANDMARK}")
             print(f"[FaceRecognizer] 下载: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2")
             return False
-        if not os.path.exists(FACE_RECOGNITION_MODEL):
-            print(f"[FaceRecognizer] 缺失模型: {FACE_RECOGNITION_MODEL}")
+        if not os.path.exists(_RESOLVED_RECOGNITION):
+            print(f"[FaceRecognizer] 缺失模型: {_RESOLVED_RECOGNITION}")
             print(f"[FaceRecognizer] 下载: http://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat.bz2")
             return False
 
         try:
             self._detector = dlib.get_frontal_face_detector()
-            self._predictor = dlib.shape_predictor(FACE_LANDMARK_MODEL)
-            self._encoder = dlib.face_recognition_model_v1(FACE_RECOGNITION_MODEL)
+            self._predictor = dlib.shape_predictor(_RESOLVED_LANDMARK)
+            self._encoder = dlib.face_recognition_model_v1(_RESOLVED_RECOGNITION)
         except Exception as e:
+            # 半初始化回滚，避免遗留状态引起调试困惑
+            self._detector = None
+            self._predictor = None
+            self._encoder = None
             print(f"[FaceRecognizer] 模型加载失败: {e}")
             return False
 
         # 加载主人库
-        os.makedirs(OWNERS_DIR, exist_ok=True)
+        os.makedirs(_RESOLVED_OWNERS_DIR, exist_ok=True)
+        self._owners_dir = _RESOLVED_OWNERS_DIR
         self._load_registry()
 
         self._initialized = True
@@ -92,11 +105,11 @@ class FaceRecognizer:
     def _load_registry(self):
         """从磁盘加载主人库"""
         self._owners = []
-        if not os.path.isdir(OWNERS_DIR):
+        if not os.path.isdir(_RESOLVED_OWNERS_DIR):
             return
 
-        for owner_dir_name in sorted(os.listdir(OWNERS_DIR)):
-            owner_path = os.path.join(OWNERS_DIR, owner_dir_name)
+        for owner_dir_name in sorted(os.listdir(_RESOLVED_OWNERS_DIR)):
+            owner_path = os.path.join(_RESOLVED_OWNERS_DIR, owner_dir_name)
             if not os.path.isdir(owner_path):
                 continue
             meta_path = os.path.join(owner_path, "meta.json")
@@ -109,9 +122,14 @@ class FaceRecognizer:
                 embeddings = []
                 for fname in sorted(os.listdir(owner_path)):
                     if fname.startswith("embedding_") and fname.endswith(".npy"):
-                        emb = np.load(os.path.join(owner_path, fname))
-                        embeddings.append(emb)
+                        # 单文件损坏不应连累整个 owner
+                        try:
+                            emb = np.load(os.path.join(owner_path, fname), allow_pickle=False)
+                            embeddings.append(emb)
+                        except Exception as e:
+                            print(f"[FaceRecognizer] 跳过损坏样本 {owner_dir_name}/{fname}: {e}")
                 if not embeddings:
+                    print(f"[FaceRecognizer] 主人 {owner_dir_name} 无有效样本，跳过")
                     continue
                 self._owners.append({
                     "id": owner_dir_name,
@@ -134,24 +152,40 @@ class FaceRecognizer:
             name: 主人名字 (会用于目录名，做安全过滤)
 
         Returns:
-            str: owner_id (目录名)，失败返回 None
+            str: owner_id (目录名)，失败返回 None；同名主人已存在返回 "exists"
         """
         with self._lock:
-            # 安全过滤名字 → 文件名 (只保留字母数字下划线中文)
-            safe_name = "".join(c for c in name if c.isalnum() or c in ("_", "-") or "\u4e00" <= c <= "\u9fff")
+            # 重名检查
+            for o in self._owners:
+                if o["name"] == name:
+                    return "exists"
+
+            # 安全过滤名字 → 文件名 (只保留字母数字下划线横线 + CJK 基本区/扩展A区)
+            safe_name = "".join(c for c in name if (
+                c.isalnum() or c in ("_", "-")
+                or 0x4e00 <= ord(c) <= 0x9fff
+                or 0x3400 <= ord(c) <= 0x4dbf
+            ))
             if not safe_name:
                 safe_name = "owner"
-            # 找一个不冲突的 ID
-            idx = 1
-            while True:
-                owner_id = f"owner_{idx:03d}_{safe_name}"
-                owner_path = os.path.join(OWNERS_DIR, owner_id)
-                if not os.path.exists(owner_path):
+            # 找一个不冲突的 ID (限制最大重试 10000 次，防异常累积)
+            owner_path = None
+            owner_id = None
+            for idx in range(1, 10001):
+                candidate_id = f"owner_{idx:03d}_{safe_name}"
+                candidate_path = os.path.join(_RESOLVED_OWNERS_DIR, candidate_id)
+                try:
+                    os.makedirs(candidate_path, exist_ok=False)  # 原子创建，防 TOCTOU
+                    owner_id = candidate_id
+                    owner_path = candidate_path
                     break
-                idx += 1
+                except FileExistsError:
+                    continue
+            if owner_path is None:
+                print(f"[FaceRecognizer] 注册失败: 找不到可用 ID")
+                return None
 
             try:
-                os.makedirs(owner_path, exist_ok=False)
                 meta = {"name": name, "created": datetime.now().isoformat()}
                 with open(os.path.join(owner_path, "meta.json"), "w", encoding="utf-8") as f:
                     json.dump(meta, f, ensure_ascii=False, indent=2)
@@ -202,23 +236,36 @@ class FaceRecognizer:
             return {"ok": False, "msg": f"未找到主人 {owner_id}"}
 
         # 检测人脸 + 编码
-        result = self._detect_and_encode(frame)
+        result = self._detect_and_encode(frame, for_enrollment=True)
         if not result["ok"]:
             return {"ok": False, "msg": result["msg"]}
 
-        # 取最大的人脸作为目标 (假设同一帧只有该主人)
         faces = result["faces"]
         if not faces:
             return {"ok": False, "msg": "画面中未检测到人脸"}
-        target = max(faces, key=lambda f: (f["box"][2] * f["box"][3]))
-        emb = target["embedding"]
+        # 严格校验: 录入时只允许画面中有一张人脸，避免录错人 (身后大脸会被误录)
+        if len(faces) > 1:
+            return {"ok": False, "msg": f"画面中检测到 {len(faces)} 张人脸，请确保画面中只有您一人"}
+        emb = faces[0]["embedding"]
 
-        # 保存
+        # embedding 有效性校验 (极端光照/检测框异常可能产生 nan/inf)
+        if not np.all(np.isfinite(emb)):
+            return {"ok": False, "msg": "embedding 异常 (光照不足或检测异常)，请重试"}
+
+        # 保存 (sample_idx 计算 + np.save + 内存 append 全部在同一锁内，避免并发覆盖文件)
         try:
-            sample_idx = len(owner["embeddings"]) + 1
-            fname = f"embedding_{sample_idx:03d}.npy"
-            np.save(os.path.join(owner["path"], fname), emb)
             with self._lock:
+                # 扫描目录已有最大编号 + 1，防止手动删除文件后 len != 实际文件数 导致重号覆盖
+                existing = []
+                for fname in os.listdir(owner["path"]):
+                    if fname.startswith("embedding_") and fname.endswith(".npy"):
+                        try:
+                            existing.append(int(fname[len("embedding_"):-len(".npy")]))
+                        except ValueError:
+                            continue
+                sample_idx = (max(existing) + 1) if existing else 1
+                fname = f"embedding_{sample_idx:03d}.npy"
+                np.save(os.path.join(owner["path"], fname), emb)
                 owner["embeddings"].append(emb)
             print(f"[FaceRecognizer] 保存 {owner['name']} 的第 {sample_idx} 个样本")
             return {"ok": True, "msg": f"已采集 {sample_idx}/{OWNER_SAMPLES_PER_PERSON}", "samples": sample_idx}
@@ -227,11 +274,13 @@ class FaceRecognizer:
 
     # ===================== 识别 =====================
 
-    def _detect_and_encode(self, frame):
+    def _detect_and_encode(self, frame, for_enrollment=False):
         """检测人脸并计算 128D embedding
 
         Args:
             frame: RGB 图像
+            for_enrollment: True=录入模式 (upsample=1 检测小脸更准, jittering=10 embedding 更鲁棒)
+                            False=识别模式 (upsample=0 加速, jittering=0)
 
         Returns:
             dict: {"ok": bool, "faces": [{"box": (x,y,w,h), "embedding": np.ndarray}], "msg": str}
@@ -240,21 +289,22 @@ class FaceRecognizer:
             return {"ok": False, "faces": [], "msg": "模块未初始化"}
 
         try:
-            import dlib
             # dlib 期望 RGB 输入
             if frame.ndim != 3 or frame.shape[2] != 3:
                 return {"ok": False, "faces": [], "msg": "图像格式错误"}
 
-            # HOG 检测 (upsample=1 提高小脸检测率，约 2x 慢)
-            dets = self._detector(frame, 1)
+            # 录入用 upsample=1 (慢但准, 小脸不漏), 跟随识别用 upsample=0 (快, ~10FPS 必需)
+            upsample = 1 if for_enrollment else 0
+            # 录入用 jittering=10 (dlib 推荐, 数据增强让 embedding 对姿态/光照更鲁棒)
+            jittering = 10 if for_enrollment else 0
+            dets = self._detector(frame, upsample)
             if not dets:
                 return {"ok": True, "faces": [], "msg": "未检测到人脸"}
 
             faces = []
             for det in dets:
                 shape = self._predictor(frame, det)
-                # 128D encoding; jittering=0 加速 (录入时可加 10 增强鲁棒)
-                emb = np.array(self._encoder.compute_face_descriptor(frame, shape, 0))
+                emb = np.array(self._encoder.compute_face_descriptor(frame, shape, jittering))
                 # dlib.rectangle → (x, y, w, h)
                 box = (det.left(), det.top(), det.width(), det.height())
                 faces.append({"box": box, "embedding": emb})
@@ -278,28 +328,31 @@ class FaceRecognizer:
         """识别人脸身份
 
         Args:
-            face: detect_faces 返回的 dict (含 embedding)
+            face: detect_faces 返回的 dict (含 embedding)，None 安全
 
         Returns:
             str or None: 匹配到的主人名，未识别返回 None
         """
-        if not self._initialized or "embedding" not in face:
+        if not self._initialized:
+            return None
+        if not isinstance(face, dict) or "embedding" not in face:
             return None
 
         emb = face["embedding"]
+        # 锁内只做浅拷贝快照，锁外做 O(N*M) 余弦计算，避免阻塞 register/delete/capture
         with self._lock:
             if not self._owners:
                 return None
-            best_name = None
-            best_sim = 0.0
-            for owner in self._owners:
-                # 与该主人的所有样本比对，取最高相似度
-                for sample in owner["embeddings"]:
-                    sim = self._cosine_similarity(emb, sample)
-                    if sim > best_sim:
-                        best_sim = sim
-                        best_name = owner["name"]
-        # 阈值判定
+            snapshot = [(o["name"], list(o["embeddings"])) for o in self._owners]
+
+        best_name = None
+        best_sim = 0.0
+        for name, samples in snapshot:
+            for sample in samples:
+                sim = self._cosine_similarity(emb, sample)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_name = name
         if best_sim >= FACE_MATCH_THRESHOLD:
             return best_name
         return None
@@ -308,24 +361,31 @@ class FaceRecognizer:
     def _cosine_similarity(a, b):
         """余弦相似度 (0~1)"""
         norm = np.linalg.norm(a) * np.linalg.norm(b)
-        if norm == 0:
+        # 浮点比较用 1e-12 容差，防 norm 极小但非零导致除法溢出
+        if norm < 1e-12:
             return 0.0
-        # embedding 已归一化, 这里 float() 防溢出
         return float(np.dot(a, b) / norm)
 
     def is_ready(self):
-        return self._initialized and len(self._owners) > 0
+        """模块是否就绪 (initialized + 至少一个 owner 有有效样本)"""
+        with self._lock:
+            return self._initialized and any(o["embeddings"] for o in self._owners)
 
     def draw_detections(self, frame, faces, identifications=None):
-        """在画面上绘制人脸框和识别结果 (用于 web 端可视化)"""
+        """在画面上绘制人脸框和识别结果 (用于 web 端可视化)
+
+        注意: frame 来自 picamera2 是 RGB，但 cv2 绘图按 BGR 解释颜色，
+        颜色元组按 BGR 写。绿色 (0,255,0) 和红色 (0,0,255) 在 RGB/BGR 下
+        对称反转但巧合一致；其他颜色需注意。
+        """
         import cv2
         if frame is None:
             return frame
         identifications = identifications or []
         for i, face in enumerate(faces):
             x, y, w, h = face["box"]
-            name = identifications[i] if i < len(identifications) else "?"
-            color = (0, 255, 0) if name else (0, 0, 255)
+            name = identifications[i] if i < len(identifications) else None
+            color = (0, 255, 0) if name else (0, 0, 255)  # BGR: 绿=识别到, 红=未知
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             label = name if name else "未知"
             cv2.putText(frame, label, (x, y - 10),

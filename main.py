@@ -159,7 +159,7 @@ class AICar:
         if mode not in ("manual", "auto", "voice", "follow"):
             return
 
-        # follow 模式前置检查: 人脸识别未就绪则拒绝
+        # follow 模式前置检查: 人脸识别未就绪则拒绝 (返回不切，WebServer 也会因前置检查不调用到这里)
         if mode == "follow" and not self.face_recognizer.is_ready():
             print("[Main] 跟随模式不可用: 人脸识别未就绪 (未安装 dlib 或主人库为空)")
             self.voice_out.say("请先录入主人")
@@ -169,28 +169,34 @@ class AICar:
             prev_mode = self._mode
             self._mode = mode
 
-            # 进入 auto: 保存用户速度，设为 AUTO_MAX_SPEED (30%)
-            if mode == "auto" and prev_mode != "auto":
+            # 限速模式 (auto/follow) 速度保存/恢复策略:
+            # - 从非限速模式进入限速模式: 保存用户原始速度
+            # - 从限速模式退出到非限速模式: 恢复用户原始速度
+            # - auto ↔ follow 之间切换: 不动 _saved_user_speed (避免被限速值覆盖丢失)
+            # 之前 bug: auto→follow 时 prev_mode=="auto" 触发"进入 follow 保存速度"分支，
+            # 把 _saved_user_speed 写成 AUTO_MAX_SPEED (30) 而非用户原始值，永久丢失
+            LIMITED_MODES = ("auto", "follow")
+            if mode in LIMITED_MODES and prev_mode not in LIMITED_MODES:
                 self._saved_user_speed = self.motor.get_speed()
-                self.motor.set_speed(AUTO_MAX_SPEED)
-            # 进入 follow: 保存用户速度，设为 FOLLOW_SPEED (40%)
-            elif mode == "follow" and prev_mode != "follow":
-                self._saved_user_speed = self.motor.get_speed()
-                self.motor.set_speed(FOLLOW_SPEED)
-            # 退出 auto/follow: 恢复用户速度
-            elif mode not in ("auto", "follow") and prev_mode in ("auto", "follow"):
+            elif mode not in LIMITED_MODES and prev_mode in LIMITED_MODES:
                 if self._saved_user_speed is not None:
                     self.motor.set_speed(self._saved_user_speed)
                     self._saved_user_speed = None
+
+            # 设置当前模式速度
+            if mode == "auto":
+                self.motor.set_speed(AUTO_MAX_SPEED)
+            elif mode == "follow":
+                self.motor.set_speed(FOLLOW_SPEED)
 
             # 所有模式切换都停车，避免上一模式残留的运动指令继续执行
             self.motor.stop()
 
         print(f"[Main] 切换到模式: {mode}")
-        # 同步 WebServer._mode
+        # 同步 WebServer._mode (语音切换模式时 web 端模式状态需保持一致)
         if self.web is not None:
             self.web.set_mode(mode)
-        # 语音播报在锁外 (espeak 子进程启动慢)
+        # 语音播报在锁外 (espeak 子进程启动慢，避免长时间持锁阻塞 auto-pilot)
         if mode == "voice":
             self.voice_out.say("语音模式已开启")
         elif mode == "auto":
@@ -322,7 +328,18 @@ class AICar:
                     if self._mode != "auto":
                         self.motor.stop()
                         continue
-                    rot = Y_SLOW if turn_dir == "right" else -Y_SLOW
+                    # turn_dir 可能是 "left"/"right"/None。
+                    # 之前 bug: None 时默认 rot=-Y_SLOW (左转)，隐性约束脆弱。
+                    # 显式处理 None: 不转向，仅后退后停止 (后续循环会重新决策)
+                    if turn_dir == "right":
+                        rot = Y_SLOW
+                    elif turn_dir == "left":
+                        rot = -Y_SLOW
+                    else:
+                        # turn_dir is None, 不转向
+                        self.motor.stop()
+                        time.sleep(0.4)
+                        continue
                     self.motor.move(rotation=rot)
                 time.sleep(0.4)
             elif turn_dir:
@@ -332,7 +349,14 @@ class AICar:
                     if self._mode != "auto":
                         self.motor.stop()
                         continue
-                    rot = Y_SLOW if turn_dir == "right" else -Y_SLOW
+                    if turn_dir == "right":
+                        rot = Y_SLOW
+                    elif turn_dir == "left":
+                        rot = -Y_SLOW
+                    else:
+                        self.motor.stop()
+                        time.sleep(0.4)
+                        continue
                     self.motor.move(rotation=rot)
                 time.sleep(0.4)
             else:
@@ -384,6 +408,10 @@ class AICar:
 
     def _voice_control_loop(self):
         """语音控制循环"""
+        # 前置检查: 语音输入未就绪则不进入循环 (避免 listen_once 反复抛异常)
+        if not getattr(self.voice_in, "_available", False):
+            print("[VoiceControl] 语音输入未初始化，跳过语音控制线程")
+            return
         print("[VoiceControl] 语音控制启动")
         # 不在开机时播报，进入语音模式时由 set_mode() 播报"语音模式已开启"
 
@@ -428,8 +456,11 @@ class AICar:
                 self.motor.set_speed(speed)
                 self.voice_out.say(f"速度已到{speed}")
             elif "归中" in cmd or "复位" in cmd:
-                self.servo.center()
-                self.voice_out.say("云台已归中")
+                if getattr(self.servo, "_initialized", False):
+                    self.servo.center()
+                    self.voice_out.say("云台已归中")
+                else:
+                    self.voice_out.say("舵机未初始化")
             elif any(w in cmd for w in ["手动", "遥控"]):
                 self.set_mode("manual")
                 self.voice_out.say("切换为手动模式")
@@ -472,8 +503,27 @@ class AICar:
         self._running = False
 
     def cleanup(self):
-        """安全释放所有资源"""
+        """安全释放所有资源
+
+        释放顺序: 先停后台线程 (follower/web) → 再停硬件 → 最后 GPIO 清理。
+        之前 bug: 未停 follower 线程，cleanup 期间 follower 还可能调 motor.move/servo.pan，
+        与 cleanup 的资源释放竞争。
+        """
         print("\n[Main] 正在关闭系统...")
+        self._running = False
+
+        # 1. 先停 follower 线程 (避免它继续调 motor/servo/camera)
+        if self.follower:
+            try:
+                self.follower.stop()
+            except Exception as e:
+                print(f"[Main] 停止 follower 异常: {e}")
+
+        # 2. 停 web 服务器 (避免新请求触发 on_mode_change → set_mode → motor.move)
+        # Flask 用 daemon 线程跑，主进程退出时自动结束；这里不显式 shutdown，
+        # 但通过 _running=False 让 auto-pilot/voice 线程退出
+
+        # 3. 停硬件
         if getattr(self.motor, "_initialized", False):
             self.motor.stop()
             self.motor.cleanup()

@@ -72,20 +72,31 @@ class Ultrasonic:
                 return -1
 
             # 排序后取中位数
+            # 之前 bug: 偶数样本时 len//2 取的是上中位数，存在轻微偏差。
+            # 改为偶数取中间两个的平均值，奇数取正中。
             distances.sort()
-            return distances[len(distances) // 2]
+            n = len(distances)
+            if n % 2 == 1:
+                return distances[n // 2]
+            return (distances[n // 2 - 1] + distances[n // 2]) / 2.0
 
     def _single_measure(self):
         """单次测距"""
+        # 统一超时基准点 t0 (审查 bug):
+        # 之前两个 while 循环用不同的基准 (timeout_start / pulse_start)，
+        # 若 ECHO 一直没变高，第二个 while 的 pulse_start 永不更新，
+        # 总耗时可能远超 TIMEOUT_SEC 才返回。
+        # 现在两个循环都用 time.time() - t0 判断总超时。
+        t0 = time.time()
+
         # 发送 10us 触发脉冲
         GPIO.output(ULTRASONIC_TRIG, GPIO.HIGH)
         time.sleep(0.00001)  # 10us
         GPIO.output(ULTRASONIC_TRIG, GPIO.LOW)
 
         # 等待 ECHO 变高 (等待回响开始)
-        timeout_start = time.time()
         while GPIO.input(ULTRASONIC_ECHO) == GPIO.LOW:
-            if time.time() - timeout_start > 0.02:  # 20ms 超时 (约 3.4m)
+            if time.time() - t0 > 0.02:  # 总超时 20ms (约 3.4m)
                 return -1
 
         # 记录脉冲开始时间
@@ -93,7 +104,7 @@ class Ultrasonic:
 
         # 等待 ECHO 变低 (等待回响结束)
         while GPIO.input(ULTRASONIC_ECHO) == GPIO.HIGH:
-            if time.time() - pulse_start > TIMEOUT_SEC:
+            if time.time() - t0 > TIMEOUT_SEC:  # 总超时 (含等待变高阶段)
                 return -1
 
         pulse_end = time.time()

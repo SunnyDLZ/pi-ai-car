@@ -105,9 +105,12 @@ class MotorController:
             GPIO.output(in1, GPIO.LOW)
             GPIO.output(in2, GPIO.LOW)
 
-        # 低于最小值时直接关闭 (避免电机嗡嗡叫)
+        # 低于最小值时 clamp 到最小值 (而非清零)
+        # 之前 bug: 清零会破坏麦轮运动学 — 低速时各轮占空比 < 20% 被清零，
+        # 导致斜向移动/小旋转失效 (用户反馈: 速度 30% 以下按左转右转没反应)。
+        # clamp 到 MIN 保证电机能转，麦轮运动学合成方向正确。
         if 0 < speed_pct < MOTOR_SPEED_MIN:
-            speed_pct = 0
+            speed_pct = MOTOR_SPEED_MIN
 
         # 只用 ChangeDutyCycle，不销毁/重建 PWM 对象
         # (RPi.GPIO 软件 PWM 重建有时序问题，尤其 BCM12 硬件 PWM 引脚)
@@ -115,8 +118,13 @@ class MotorController:
             self._pwm_channels[ena].ChangeDutyCycle(speed_pct)
 
     def set_speed(self, speed_pct):
-        """设置全局速度比例"""
-        self._speed = max(MOTOR_SPEED_MIN, min(MOTOR_SPEED_MAX, speed_pct))
+        """设置全局速度比例
+
+        允许 0 值 (急停场景)。非 0 值不再强制下限到 MOTOR_SPEED_MIN —
+        低速时由 _set_motor 内部 clamp 到 MIN 保证电机能转，
+        而不是在这里把速度本身提到 20% (那样 set_speed(10) 实际跑 20%，违反用户预期)。
+        """
+        self._speed = max(0, min(MOTOR_SPEED_MAX, speed_pct))
 
     def get_speed(self):
         return self._speed
