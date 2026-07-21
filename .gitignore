@@ -20,3 +20,19 @@ models/*.prototxt
 
 # Logs
 *.log
+
+# 主人库隐私数据 — 人脸 embedding、采集的图像, 绝不上传
+data/owners/*/
+data/owners/*.npy
+data/owners/*.jpg
+data/owners/*.png
+data/owners/*.jpeg
+!data/owners/.gitkeep
+!data/owners/registry.example.json
+
+# 录入的临时人脸图像
+data/captures/
+
+# dlib 人脸模型 (68 点预测器, ~100KB 但属于第三方)
+models/shape_predictor_68_face_landmarks.dat
+models/dlib_face_recognition_resnet_model_v1.dat

@@ -22,13 +22,17 @@ class WebServer:
 
     def __init__(self, motor: MotorController, servo: ServoGimbal,
                  camera_csi=None,
-                 ultrasonic=None, vision=None,
+                 ultrasonic=None, vision=None, vision_obs=None,
+                 face_recognizer=None, follower=None,
                  on_mode_change=None):
         self._motor = motor
         self._servo = servo
         self._camera_csi = camera_csi
         self._ultrasonic = ultrasonic
         self._vision = vision
+        self._vision_obs = vision_obs
+        self._face_recognizer = face_recognizer
+        self._follower = follower
         self._on_mode_change = on_mode_change
 
         self._app = Flask(__name__)
@@ -47,7 +51,7 @@ class WebServer:
         供 AICar.set_mode 在语音/自动切换模式时同步 WebServer._mode，
         使 /api/control 的模式检查和前端按钮状态保持正确。
         """
-        if mode in ("manual", "auto", "voice"):
+        if mode in ("manual", "auto", "voice", "follow"):
             self._mode = mode
 
     def _register_routes(self):
@@ -113,7 +117,7 @@ class WebServer:
         def api_mode():
             data = request.get_json(silent=True) or {}
             mode = data.get("mode", "manual")
-            if mode in ("manual", "auto", "voice"):
+            if mode in ("manual", "auto", "voice", "follow"):
                 self._mode = mode
                 if self._on_mode_change:
                     self._on_mode_change(mode)
@@ -138,11 +142,74 @@ class WebServer:
             if self._ultrasonic:
                 d = self._ultrasonic.measure()
                 dist = round(d, 1) if d > 0 else -1
-            return jsonify({
+            status = {
                 "mode": self._mode,
                 "distance": dist,
                 "speed": self._motor.get_speed(),
+                "face_ready": self._face_recognizer.is_ready() if self._face_recognizer else False,
+            }
+            if self._follower:
+                status["follow_state"] = self._follower.get_state()
+            return jsonify(status)
+
+        # ========== 主人管理 API ==========
+
+        @app.route("/api/owner/list")
+        def owner_list():
+            if not self._face_recognizer:
+                return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
+            return jsonify({
+                "status": "ok",
+                "owners": self._face_recognizer.list_owners(),
+                "ready": self._face_recognizer.is_ready(),
             })
+
+        @app.route("/api/owner/register", methods=["POST"])
+        def owner_register():
+            if not self._face_recognizer:
+                return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
+            data = request.get_json(silent=True) or {}
+            name = (data.get("name") or "").strip()
+            if not name:
+                return jsonify({"status": "error", "msg": "名字不能为空"}), 400
+            owner_id = self._face_recognizer.register_owner(name)
+            if owner_id:
+                return jsonify({"status": "ok", "owner_id": owner_id, "name": name})
+            return jsonify({"status": "error", "msg": "注册失败"}), 500
+
+        @app.route("/api/owner/capture", methods=["POST"])
+        def owner_capture():
+            """采集当前帧的人脸 embedding 到指定主人"""
+            if not self._face_recognizer:
+                return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
+            if not self._face_recognizer.is_ready():
+                return jsonify({"status": "error", "msg": "人脸识别未初始化 (检查 dlib 安装/模型文件)"}), 503
+            data = request.get_json(silent=True) or {}
+            owner_id = data.get("owner_id")
+            if not owner_id:
+                return jsonify({"status": "error", "msg": "缺少 owner_id"}), 400
+            frame = self._get_current_frame()
+            if frame is None:
+                return jsonify({"status": "error", "msg": "摄像头未就绪"}), 503
+            result = self._face_recognizer.capture_and_save_embedding(owner_id, frame)
+            return jsonify({"status": "ok" if result["ok"] else "error", "msg": result["msg"]})
+
+        @app.route("/api/owner/delete", methods=["POST"])
+        def owner_delete():
+            if not self._face_recognizer:
+                return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
+            data = request.get_json(silent=True) or {}
+            owner_id = data.get("owner_id")
+            if not owner_id:
+                return jsonify({"status": "error", "msg": "缺少 owner_id"}), 400
+            ok = self._face_recognizer.delete_owner(owner_id)
+            return jsonify({"status": "ok" if ok else "error"})
+
+        @app.route("/api/follow_state")
+        def follow_state():
+            if not self._follower:
+                return jsonify({"status": "error", "msg": "跟随模块未加载"}), 503
+            return jsonify({"status": "ok", "state": self._follower.get_state()})
 
         @app.route("/video_feed")
         def video_feed():
@@ -164,12 +231,25 @@ class WebServer:
                 with self._frame_lock:
                     self._latest_frame = frame.copy()
 
-                if self._vision and self._mode == "auto":
-                    detections = self._vision.detect(frame)
-                    with self._frame_lock:
-                        self._latest_detections = detections
-                    if detections:
-                        frame = self._vision.draw_detections(frame, detections)
+                # auto 模式: 叠加视觉避障分析 + 物体检测
+                if self._mode == "auto":
+                    if self._vision_obs:
+                        analysis = self._vision_obs.analyze(frame)
+                        if analysis.get("ok"):
+                            frame = self._vision_obs.draw_overlay(frame, analysis)
+                    if self._vision:
+                        detections = self._vision.detect(frame)
+                        with self._frame_lock:
+                            self._latest_detections = detections
+                        if detections:
+                            frame = self._vision.draw_detections(frame, detections)
+
+                # follow 模式: 画人脸框和识别结果
+                elif self._mode == "follow" and self._face_recognizer and self._face_recognizer.is_ready():
+                    faces = self._face_recognizer.detect_faces(frame)
+                    if faces:
+                        ids = [self._face_recognizer.identify(f) for f in faces]
+                        frame = self._face_recognizer.draw_detections(frame, faces, ids)
 
                 _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
                 yield (b'--frame\r\n'
@@ -414,6 +494,45 @@ html, body {
   box-shadow:0 0 8px rgba(233,69,96,0.3);
 }
 
+/* 主人管理 */
+.owner-row {
+  display:flex; gap:4px; width:100%; flex:0 0 auto;
+}
+.owner-input {
+  flex:1; padding:6px 8px; border:1px solid var(--accent2);
+  border-radius:8px; background:var(--bg); color:var(--text);
+  font-size:13px; min-width:0;
+}
+.owner-btn {
+  padding:6px 14px; border:none; border-radius:8px;
+  background:var(--accent2); color:#fff; font-size:12px; cursor:pointer;
+}
+.owner-list {
+  width:100%; max-height:80px; overflow-y:auto;
+  display:flex; flex-direction:column; gap:3px;
+}
+.owner-item {
+  display:flex; align-items:center; gap:6px;
+  padding:4px 8px; background:rgba(255,255,255,0.04);
+  border-radius:6px; font-size:12px;
+}
+.owner-name { flex:1; }
+.owner-name small { color:#888; }
+.owner-capture-btn, .owner-del-btn {
+  padding:3px 8px; border:none; border-radius:4px;
+  font-size:11px; cursor:pointer; color:#fff;
+}
+.owner-capture-btn { background:#0f3460; }
+.owner-del-btn { background:#c62828; }
+
+/* 跟随状态显示 */
+.follow-status {
+  width:100%; padding:6px 10px; margin-top:4px;
+  background:rgba(15,52,96,0.3); border-radius:8px;
+  font-size:12px; line-height:1.5;
+}
+.follow-status span { color:#00e676; }
+
 /* 分隔线 */
 .divider {
   width:100%; height:1px; background:rgba(255,255,255,0.06);
@@ -532,6 +651,21 @@ html, body {
       <button class="mode-btn active" id="modeManual" onclick="setMode('manual')">🕹手动</button>
       <button class="mode-btn" id="modeAuto" onclick="setMode('auto')">🤖自动</button>
       <button class="mode-btn" id="modeVoice" onclick="setMode('voice')">🎤语音</button>
+      <button class="mode-btn" id="modeFollow" onclick="setMode('follow')">👣跟随</button>
+    </div>
+
+    <!-- 主人管理 (跟随模式依赖) -->
+    <div class="section-label">主人管理 <span id="faceStatus" style="font-size:0.7em;color:#999;"></span></div>
+    <div class="owner-row">
+      <input type="text" id="ownerNameInput" placeholder="主人名字" class="owner-input">
+      <button class="owner-btn" onclick="registerOwner()">注册</button>
+    </div>
+    <div id="ownerList" class="owner-list"></div>
+
+    <!-- 跟随状态显示 -->
+    <div id="followStatusBox" class="follow-status" style="display:none;">
+      <div>状态: <span id="followMsg">待机</span></div>
+      <div>目标: <span id="followTarget">-</span></div>
     </div>
 
   </div>
@@ -708,9 +842,105 @@ async function syncMode() {
     document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
     const btn = document.getElementById('mode' + mode.charAt(0).toUpperCase() + mode.slice(1));
     if (btn) btn.classList.add('active');
+
+    // 显示/隐藏跟随状态框
+    const fsBox = document.getElementById('followStatusBox');
+    if (fsBox) fsBox.style.display = (mode === 'follow') ? 'block' : 'none';
   } catch(e) {}
 }
 setInterval(syncMode, 1000);
+
+// ===== 主人管理 =====
+async function refreshOwners() {
+  try {
+    const r = await fetch('/api/owner/list');
+    const d = await r.json();
+    const statusEl = document.getElementById('faceStatus');
+    if (statusEl) {
+      statusEl.textContent = d.ready ? `(已就绪, ${d.owners.length}人)` : '(未就绪)';
+      statusEl.style.color = d.ready ? '#00e676' : '#999';
+    }
+    const listEl = document.getElementById('ownerList');
+    if (!listEl) return;
+    if (!d.owners || d.owners.length === 0) {
+      listEl.innerHTML = '<div style="color:#666;font-size:0.8em;padding:4px 0;">尚未录入主人</div>';
+      return;
+    }
+    listEl.innerHTML = d.owners.map(o => `
+      <div class="owner-item">
+        <span class="owner-name">${o.name} <small>(${o.samples}样本)</small></span>
+        <button class="owner-capture-btn" onclick="captureOwner('${o.id}','${o.name.replace(/'/g,"\\'")}')">采集</button>
+        <button class="owner-del-btn" onclick="deleteOwner('${o.id}')">删</button>
+      </div>
+    `).join('');
+  } catch(e) {}
+}
+
+async function registerOwner() {
+  const input = document.getElementById('ownerNameInput');
+  const name = (input.value || '').trim();
+  if (!name) { alert('请输入名字'); return; }
+  try {
+    const r = await fetch('/api/owner/register', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name})
+    });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      input.value = '';
+      await refreshOwners();
+      alert(`已注册 "${name}"，请站到摄像头前点"采集"3次`);
+    } else {
+      alert('注册失败: ' + (d.msg || ''));
+    }
+  } catch(e) { alert('网络错误'); }
+}
+
+async function captureOwner(ownerId, ownerName) {
+  try {
+    const r = await fetch('/api/owner/capture', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({owner_id: ownerId})
+    });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      await refreshOwners();
+      // 不弹窗，避免刷屏；通过列表中样本数变化体现
+    } else {
+      alert(d.msg || '采集失败');
+    }
+  } catch(e) { alert('网络错误'); }
+}
+
+async function deleteOwner(ownerId) {
+  if (!confirm('确定删除该主人?')) return;
+  try {
+    await fetch('/api/owner/delete', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({owner_id: ownerId})
+    });
+    await refreshOwners();
+  } catch(e) {}
+}
+
+// 跟随状态轮询
+async function updateFollowState() {
+  try {
+    const r = await fetch('/api/follow_state');
+    const d = await r.json();
+    if (d.status !== 'ok') return;
+    const s = d.state;
+    const msgEl = document.getElementById('followMsg');
+    const tgtEl = document.getElementById('followTarget');
+    if (msgEl) msgEl.textContent = s.msg || '待机';
+    if (tgtEl) tgtEl.textContent = s.target_name || '-';
+  } catch(e) {}
+}
+
+// 初始化 + 定期刷新
+refreshOwners();
+setInterval(refreshOwners, 5000);    // 主人列表 5s 刷新一次
+setInterval(updateFollowState, 500); // 跟随状态 500ms 刷新
 
 // ===== 防止触摸滚动/缩放 (但不阻止滑块拖动) =====
 document.addEventListener('touchmove', function(e) {

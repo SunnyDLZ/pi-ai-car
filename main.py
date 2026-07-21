@@ -15,7 +15,6 @@ main.py - AI 小车主程序入口
 """
 
 import signal
-import sys
 import time
 import threading
 
@@ -25,9 +24,12 @@ from ultrasonic import Ultrasonic
 from camera import CSICamera
 from voice import VoiceOutput, VoiceInput
 from ai_vision import AIVision
+from vision_obstacle import VisionObstacle
+from face_recognizer import FaceRecognizer
+from follower import Follower
 from web_server import WebServer
 from config import OBSTACLE_WARN, OBSTACLE_SLOW, OBSTACLE_STOP, \
-    AUTO_MAX_SPEED, AUTO_SLOW_SPEED, WEB_PORT
+    AUTO_MAX_SPEED, AUTO_SLOW_SPEED, WEB_PORT, VISION_SCAN_ANGLE, FOLLOW_SPEED
 
 
 class AICar:
@@ -41,6 +43,9 @@ class AICar:
         self.voice_out = VoiceOutput()
         self.voice_in = VoiceInput()
         self.vision = AIVision()
+        self.vision_obs = VisionObstacle()
+        self.face_recognizer = FaceRecognizer()
+        self.follower = None  # 延迟创建，需要传入 self
 
         self.web = None
         self._running = False
@@ -90,6 +95,22 @@ class AICar:
         except Exception as e:
             print(f"[!] AI 视觉初始化失败: {e}")
 
+        # 视觉避障分析 (纯 OpenCV, 无外部依赖)
+        try:
+            self.vision_obs.init()
+        except Exception as e:
+            print(f"[!] 视觉避障初始化失败: {e}")
+
+        # 人脸识别 (dlib, 需手动安装+下载模型, 缺失则跟随功能不可用)
+        try:
+            self.face_recognizer.init()
+        except Exception as e:
+            print(f"[!] 人脸识别初始化失败: {e}")
+
+        # 跟随控制器 (依赖 face_recognizer, 需在 face_recognizer.init 后创建)
+        self.follower = Follower(self)
+        self.follower.start()
+
         # 语音
         try:
             self.voice_out.init()
@@ -108,6 +129,9 @@ class AICar:
             camera_csi=self.camera_csi,
             ultrasonic=self.ultrasonic,
             vision=self.vision,
+            vision_obs=self.vision_obs,
+            face_recognizer=self.face_recognizer,
+            follower=self.follower,
             on_mode_change=self.set_mode,
         )
         self.web.start()
@@ -124,48 +148,71 @@ class AICar:
             return self._mode
 
     def set_mode(self, mode):
-        """切换运行模式 (线程安全，供 WebServer 回调调用)"""
+        """切换运行模式 (线程安全，供 WebServer 回调调用)
+
+        支持的模式:
+          - manual: 手动遥控
+          - auto:   超声波+视觉融合自动避障巡游
+          - voice:  语音指令控制
+          - follow: 主人跟随 (需人脸识别就绪 + 主人库非空)
+        """
+        if mode not in ("manual", "auto", "voice", "follow"):
+            return
+
+        # follow 模式前置检查: 人脸识别未就绪则拒绝
+        if mode == "follow" and not self.face_recognizer.is_ready():
+            print("[Main] 跟随模式不可用: 人脸识别未就绪 (未安装 dlib 或主人库为空)")
+            self.voice_out.say("请先录入主人")
+            return
+
         with self._mode_lock:
             prev_mode = self._mode
             self._mode = mode
 
             # 进入 auto: 保存用户速度，设为 AUTO_MAX_SPEED (30%)
-            # auto-pilot 内 y=100 即满速 → 实际输出 100*30/100 = 30%
             if mode == "auto" and prev_mode != "auto":
                 self._saved_user_speed = self.motor.get_speed()
                 self.motor.set_speed(AUTO_MAX_SPEED)
-            # 退出 auto: 恢复用户速度
-            elif mode != "auto" and prev_mode == "auto":
+            # 进入 follow: 保存用户速度，设为 FOLLOW_SPEED (40%)
+            elif mode == "follow" and prev_mode != "follow":
+                self._saved_user_speed = self.motor.get_speed()
+                self.motor.set_speed(FOLLOW_SPEED)
+            # 退出 auto/follow: 恢复用户速度
+            elif mode not in ("auto", "follow") and prev_mode in ("auto", "follow"):
                 if self._saved_user_speed is not None:
                     self.motor.set_speed(self._saved_user_speed)
                     self._saved_user_speed = None
 
-            # 非 auto 模式: 在 _mode_lock 锁内停车
-            # 与 _auto_pilot_loop 的"检查模式+执行电机"形成互斥，
-            # 避免 set_mode 的 stop() 被随后的 auto-pilot move() 覆盖
-            # 进入 auto 也停车: 防止上一模式残留的运动指令在 auto-pilot 接管前继续执行
+            # 所有模式切换都停车，避免上一模式残留的运动指令继续执行
             self.motor.stop()
 
         print(f"[Main] 切换到模式: {mode}")
-        # 同步 WebServer._mode (语音切换模式时 web 端模式状态需保持一致,
-        # 否则 /api/control 的模式检查会拒绝手动控制请求)
+        # 同步 WebServer._mode
         if self.web is not None:
             self.web.set_mode(mode)
-        # 语音播报在锁外 (espeak 子进程启动慢，避免长时间持锁阻塞 auto-pilot)
+        # 语音播报在锁外 (espeak 子进程启动慢)
         if mode == "voice":
             self.voice_out.say("语音模式已开启")
         elif mode == "auto":
             self.voice_out.say("自动模式已开启")
+        elif mode == "follow":
+            self.voice_out.say("跟随模式已开启")
 
     def _auto_pilot_loop(self):
-        """自动避障巡游模式
+        """自动避障巡游模式 (超声波 + 视觉融合)
 
-        电机 speed 设为 AUTO_MAX_SPEED (30%)，y 值=100 表示满速。
-        实际占空比 = y * speed / 100:
-          dist >= 50cm → y=100, 实际 30%
-          30 <= dist < 50 → y=67, 实际 20%
-          15 <= dist < 30 → y 从 67 线性减到 0, 实际 20%→0%
-          dist < 15cm → 急停 + 后退(y=67=20%) + 转向
+        决策流程:
+          1. 超声波测距 → 前方准确距离
+          2. 摄像头帧 → 视觉通行性分析 (左/中/右)
+          3. 融合决策:
+             - dist < 15cm → 急停 + 后退 + 视觉推荐方向转向
+             - 15~30cm 且中部阻塞 → 减速 + 用视觉推荐方向转向避障
+             - 30~50cm → 慢速前进 (视觉中部阻塞时也减速)
+             - >= 50cm 且中部畅通 → 巡航
+             - >= 50cm 但中部阻塞 → 仍要避障 (视觉弥补超声波盲区)
+          4. 转向前云台扫视一眼，提高避障成功率
+
+        速度参数: speed 设为 AUTO_MAX_SPEED (30%)，y=100 → 实际 30%
         """
         if not getattr(self.motor, "_initialized", False):
             print("[AutoPilot] 电机未初始化，跳过自动巡游线程")
@@ -174,19 +221,18 @@ class AICar:
             print("[AutoPilot] 超声波未初始化，跳过自动巡游线程")
             return
 
-        # y=100 对应 speed% (30%), y=67 对应 ~20%
         Y_FULL = 100   # → 实际 30%
         Y_SLOW = 67    # → 实际 ~20%
 
-        print("[AutoPilot] 自动巡游启动")
+        print("[AutoPilot] 自动巡游启动 (视觉融合)")
         while self._running:
             if self.get_mode() != "auto":
                 time.sleep(0.5)
                 continue
 
+            # === 1. 超声波测距 ===
             dist = self.ultrasonic.measure()
             if dist < 0:
-                # 测距失败 → 立即停车 (传感器异常时继续移动很危险)
                 with self._mode_lock:
                     if self._mode == "auto":
                         self.motor.stop()
@@ -194,55 +240,147 @@ class AICar:
                 time.sleep(0.1)
                 continue
 
-            # 在 _mode_lock 下"检查模式 + 执行电机指令"，与 set_mode() 互斥
-            # 确保 set_mode 的 stop() 不会插入到"检查通过"和"move()"之间
-            # 否则会出现: 检查通过→set_mode停车→auto-pilot又move 的危险竞态
+            # === 2. 视觉通行性分析 ===
+            # 摄像头视角比超声波宽 (~60° vs 15°)，能感知左右障碍
+            vision_info = self._analyze_vision()
+
+            # === 3. 融合决策 ===
             say_obstacle = False
             retreat = False
+            turn_dir = None  # "left"/"right"/None
+
+            # 视觉判定中部是否阻塞 (超声波可能没测到)
+            vision_center_blocked = vision_info["ok"] and vision_info["center_blocked"]
+
             with self._mode_lock:
                 if self._mode != "auto":
                     continue
+
                 if dist < OBSTACLE_STOP:
-                    # 太近 → 急停 + 后退 + 转向
+                    # 太近 → 急停 + 后退 + 转向 (用视觉推荐方向)
                     self.motor.stop()
                     say_obstacle = True
                     retreat = True
-                elif dist < OBSTACLE_SLOW:
-                    # 15~30cm → 线性减速 (y: 67→0, 实际 20%→0%)
-                    ratio = (dist - OBSTACLE_STOP) / (OBSTACLE_SLOW - OBSTACLE_STOP)
-                    y_val = int(Y_SLOW * ratio)
-                    print(f"[AutoPilot] 前方 {dist:.0f}cm → 减速 y={y_val} ({int(y_val*AUTO_MAX_SPEED/100)}%)")
-                    self.motor.move(y=y_val)
+                    turn_dir = self._pick_turn_direction(vision_info)
+
+                elif dist < OBSTACLE_SLOW or vision_center_blocked:
+                    # 15~30cm 或视觉发现中部阻塞 → 避障转向
+                    if vision_info["ok"]:
+                        suggested = vision_info["suggested_dir"]
+                        if suggested == "backward":
+                            # 三面都堵 → 后退
+                            self.motor.stop()
+                            retreat = True
+                            turn_dir = "right"  # 后退时随便选个方向
+                        elif suggested == "center":
+                            # 视觉说中部畅通 (但超声波说近) → 信任超声波减速
+                            ratio = (dist - OBSTACLE_STOP) / (OBSTACLE_SLOW - OBSTACLE_STOP) if dist < OBSTACLE_SLOW else 1.0
+                            y_val = int(Y_SLOW * ratio)
+                            self.motor.move(y=y_val)
+                        else:
+                            # 视觉推荐左/右转
+                            self.motor.stop()
+                            turn_dir = suggested
+                            say_obstacle = True
+                    else:
+                        # 视觉不可用 → 回退到旧的超声波减速逻辑
+                        if dist < OBSTACLE_SLOW:
+                            ratio = (dist - OBSTACLE_STOP) / (OBSTACLE_SLOW - OBSTACLE_STOP)
+                            y_val = int(Y_SLOW * ratio)
+                            self.motor.move(y=y_val)
+                        else:
+                            self.motor.move(y=Y_SLOW)
+
                 elif dist < OBSTACLE_WARN:
                     # 30~50cm → 固定 20% 慢速
-                    print(f"[AutoPilot] 前方 {dist:.0f}cm → 慢速 y={Y_SLOW} ({AUTO_SLOW_SPEED}%)")
                     self.motor.move(y=Y_SLOW)
-                else:
-                    # >= 50cm → 安全 30% 前进
-                    print(f"[AutoPilot] 前方 {dist:.0f}cm → 巡航 y={Y_FULL} ({AUTO_MAX_SPEED}%)")
-                    self.motor.move(y=Y_FULL)
 
-            # 锁外: 语音播报 (espeak 子进程慢) + sleep (避障动作需持续时间，但不持锁)
+                else:
+                    # >= 50cm → 巡航 (即使视觉中部阻塞，距离够远也不急转，慢速通过)
+                    if vision_center_blocked and vision_info["ok"]:
+                        print(f"[AutoPilot] 远距但视觉中部阻塞 → 慢速通过")
+                        self.motor.move(y=Y_SLOW)
+                    else:
+                        self.motor.move(y=Y_FULL)
+
+            # 锁外: 语音 + sleep (避障动作需持续时间)
             if say_obstacle:
                 self.voice_out.say("前方障碍", lang="zh")
 
             if retreat:
-                # 后退 0.5s (此前 bug: 只有 stop 没有 move(y<0), 车原地不动)
+                # 后退 0.5s
                 with self._mode_lock:
                     if self._mode != "auto":
                         self.motor.stop()
                         continue
-                    self.motor.move(y=-Y_SLOW)  # 后退 20%
+                    self.motor.move(y=-Y_SLOW)
                 time.sleep(0.5)
-                # 转向前再次在锁内检查模式，避免切手动后还转向
+                # 转向 (用视觉推荐的方向，而非固定方向)
+                if turn_dir:
+                    self._servo_scan_before_turn(turn_dir)
                 with self._mode_lock:
                     if self._mode != "auto":
                         self.motor.stop()
                         continue
-                    self.motor.move(rotation=Y_SLOW)  # 转向 20%
-                time.sleep(0.3)
+                    rot = Y_SLOW if turn_dir == "right" else -Y_SLOW
+                    self.motor.move(rotation=rot)
+                time.sleep(0.4)
+            elif turn_dir:
+                # 仅转向不后退 (15~30cm 中部阻塞)
+                self._servo_scan_before_turn(turn_dir)
+                with self._mode_lock:
+                    if self._mode != "auto":
+                        self.motor.stop()
+                        continue
+                    rot = Y_SLOW if turn_dir == "right" else -Y_SLOW
+                    self.motor.move(rotation=rot)
+                time.sleep(0.4)
             else:
                 time.sleep(0.2)
+
+    def _analyze_vision(self):
+        """抓取摄像头一帧并分析通行性
+
+        Returns:
+            dict: vision_obstacle.analyze() 的返回值；不可用时返回空结果
+        """
+        if not getattr(self.vision_obs, "_initialized", False):
+            return {"ok": False}
+        if not getattr(self.camera_csi, "_running", False):
+            return {"ok": False}
+        try:
+            frame = self.camera_csi.capture()
+            if frame is None:
+                return {"ok": False}
+            return self.vision_obs.analyze(frame)
+        except Exception as e:
+            print(f"[AutoPilot] 视觉分析异常: {e}")
+            return {"ok": False}
+
+    def _pick_turn_direction(self, vision_info):
+        """选择转向方向 (优先视觉推荐)"""
+        if vision_info.get("ok"):
+            suggested = vision_info.get("suggested_dir", "")
+            if suggested in ("left", "right"):
+                return suggested
+        return "right"  # 默认右转
+
+    def _servo_scan_before_turn(self, turn_dir):
+        """转向前云台扫视一眼，提高避障成功率
+
+        往要转的方向先看一眼 (250ms)，避免转过去才发现还是墙。
+        云台没初始化时静默跳过。
+        """
+        if not getattr(self.servo, "_initialized", False):
+            return
+        try:
+            pan_offset = VISION_SCAN_ANGLE if turn_dir == "right" else -VISION_SCAN_ANGLE
+            cur_pan, _ = self.servo.get_angles()
+            self.servo.pan(cur_pan + pan_offset)
+            time.sleep(0.25)
+            self.servo.pan(cur_pan)  # 复位
+        except Exception:
+            pass
 
     def _voice_control_loop(self):
         """语音控制循环"""
@@ -297,6 +435,8 @@ class AICar:
                 self.voice_out.say("切换为手动模式")
             elif any(w in cmd for w in ["自动", "巡航", "巡游"]):
                 self.set_mode("auto")
+            elif any(w in cmd for w in ["跟随", "跟着", "跟我"]):
+                self.set_mode("follow")
             else:
                 self.voice_out.say("没听清指令")
 

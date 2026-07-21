@@ -84,6 +84,54 @@ OBSTACLE_STOP = 15    # 停车距离: <15cm 急停后退转向
 AUTO_MAX_SPEED = 30   # 安全距离时最高速
 AUTO_SLOW_SPEED = 20  # 进入减速区 (<50cm) 降到该速度
 
+# ========== 视觉避障参数 (阶段1) ==========
+# 摄像头辅助避障 — 纯 OpenCV 图像分析，无新依赖
+# 摄像头视野通常 ~60°，比超声波 15° 波束宽，能感知左右障碍物
+# 与超声波融合决策，弥补超声波盲区
+
+# 分析区域: 画面底部比例 (0.6 = 60% 高度处到画面底)
+# 越靠下对应越近的地面区域，越早能发现障碍
+VISION_OBSTACLE_ROI_Y_START = 0.6
+
+# 每段 (左/中/右) 障碍物像素占比阈值，超过则判定该方向阻塞
+VISION_OBSTACLE_BLOCK_RATIO = 0.15
+
+# 障碍物轮廓最小面积 (像素)，过滤噪点
+VISION_OBSTACLE_MIN_AREA = 200
+
+# 云台扫视角度 (度)，转向前主动看一眼左右
+VISION_SCAN_ANGLE = 35
+
+# 视觉决策信任度: 当视觉与超声波冲突时偏向谁
+# 1.0 = 完全相信视觉 (有视觉就用), 0.0 = 完全相信超声波
+VISION_TRUST_LEVEL = 0.7
+
+# ========== 人脸识别 + 跟随 (阶段2) ==========
+# 主人库根目录 (录入的人脸 embedding 和采集的图像都存这里)
+# 已加入 .gitignore，绝不上传 GitHub
+OWNERS_DIR = "data/owners"
+
+# dlib 68 点人脸关键点模型路径 (需手动下载放置)
+# 下载: http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
+FACE_LANDMARK_MODEL = "models/shape_predictor_68_face_landmarks.dat"
+
+# dlib ResNet 人脸识别模型 (128D embedding)
+# 下载: http://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat.bz2
+FACE_RECOGNITION_MODEL = "models/dlib_face_recognition_resnet_model_v1.dat"
+
+# 主人识别余弦相似度阈值 (0~1，越高越严格)
+# 0.6 = 宽松 (易误识), 0.7 = 平衡 (推荐), 0.8 = 严格 (易漏识)
+FACE_MATCH_THRESHOLD = 0.7
+
+# 每个主人录入时采集的样本数 (不同角度/距离，提高鲁棒性)
+OWNER_SAMPLES_PER_PERSON = 3
+
+# 跟随模式参数
+FOLLOW_SPEED = 40            # 跟随模式最高速 (%)
+FOLLOW_TARGET_BOX_RATIO = 0.25  # 目标在画面中占比 (太小→前进, 太大→后退)
+FOLLOW_LOST_TIMEOUT = 5.0    # 看不到主人多久后判定丢失 (秒)
+FOLLOW_OBSTACLE_SAFE_DIST = 20  # 跟随时超声波安全距离 (cm)
+
 # ========== 舵机参数 ==========
 
 SERVO_PAN_MIN = 0     # 水平范围 (度)
