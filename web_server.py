@@ -385,11 +385,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
   --bg: #0d0d1a; --panel: #16213e; --accent: #e94560;
   --accent2: #0f3460; --text: #eee; --green: #00e676;
   --btn: #1a1a3e; --btn-active: #e94560; --radius: 14px;
-  /* 自适应尺寸单位 — 基于视口短边 vmin (D-Pad进一步放大) */
-  --dpad-btn: min(22vmin, 130px);
-  --gimbal-btn: min(16vmin, 88px);
+  /* 自适应尺寸单位 — 基于视口短边 vmin (放大方向/云台按钮) */
+  --dpad-btn: min(26vmin, 150px);
+  --gimbal-btn: min(20vmin, 110px);
   --rotate-w: min(22vmin, 120px);
-  --rotate-h: min(11vmin, 64px);
+  --rotate-h: min(12vmin, 70px);
 }
 html, body {
   width:100%; height:100%; overflow:hidden;
@@ -503,8 +503,27 @@ html, body {
   letter-spacing:1px; text-align:center; margin-bottom:2px;
 }
 .rotate-row {
-  display:flex; gap:6px; justify-content:center;
+  display:flex; gap:6px; justify-content:center; align-items:center;
 }
+/* 测距徽章 (放在旋转行左侧, 横排显示) */
+.rotate-row .dist-badge {
+  margin-right:auto;  /* 靠左对齐 */
+  background:var(--accent2); padding:6px 10px; border-radius:10px;
+  font-size:13px; color:var(--green); white-space:nowrap;
+  min-width:72px; text-align:center; flex:0 0 auto;
+}
+/* 注册/管理按钮列 (放在云台左侧) */
+.owner-action-col {
+  display:flex; flex-direction:column; gap:6px; flex:0 0 auto;
+}
+.owner-action-btn {
+  width:min(16vmin, 80px); height:min(8vmin, 44px);
+  border:none; border-radius:8px; background:var(--accent2);
+  color:var(--text); font-size:13px; cursor:pointer;
+  touch-action:manipulation; transition:all 0.08s;
+  border:1px solid rgba(255,255,255,0.08);
+}
+.owner-action-btn:active { background:var(--btn-active); transform:scale(0.92); }
 .rotate-btn {
   width:var(--rotate-w); height:var(--rotate-h); border:none; border-radius:10px;
   background:var(--btn); color:var(--text); font-size:13px;
@@ -585,37 +604,6 @@ html, body {
   box-shadow:0 0 8px rgba(233,69,96,0.3);
 }
 
-/* 主人管理 */
-.owner-row {
-  display:flex; gap:4px; width:100%; flex:0 0 auto;
-}
-.owner-input {
-  flex:1; padding:6px 8px; border:1px solid var(--accent2);
-  border-radius:8px; background:var(--bg); color:var(--text);
-  font-size:13px; min-width:0;
-}
-.owner-btn {
-  padding:6px 14px; border:none; border-radius:8px;
-  background:var(--accent2); color:#fff; font-size:12px; cursor:pointer;
-}
-.owner-list {
-  width:100%; max-height:80px; overflow-y:auto;
-  display:flex; flex-direction:column; gap:3px;
-}
-.owner-item {
-  display:flex; align-items:center; gap:6px;
-  padding:4px 8px; background:rgba(255,255,255,0.04);
-  border-radius:6px; font-size:12px;
-}
-.owner-name { flex:1; }
-.owner-name small { color:#888; }
-.owner-capture-btn, .owner-del-btn {
-  padding:3px 8px; border:none; border-radius:4px;
-  font-size:11px; cursor:pointer; color:#fff;
-}
-.owner-capture-btn { background:#0f3460; }
-.owner-del-btn { background:#c62828; }
-
 /* 跟随状态显示 */
 .follow-status {
   width:100%; padding:6px 10px; margin-top:4px;
@@ -623,6 +611,55 @@ html, body {
   font-size:12px; line-height:1.5;
 }
 .follow-status span { color:#00e676; }
+
+/* ===== 弹窗 (注册/管理主人) ===== */
+.modal-overlay {
+  display:none; position:fixed; inset:0; z-index:9998;
+  background:rgba(0,0,0,0.7); backdrop-filter:blur(4px);
+  align-items:center; justify-content:center;
+}
+.modal-overlay.show { display:flex; }
+.modal-box {
+  background:var(--panel); border-radius:16px; padding:20px;
+  width:min(90vw, 380px); max-height:80vh; overflow-y:auto;
+  border:1px solid var(--accent2); box-shadow:0 8px 32px rgba(0,0,0,0.5);
+}
+.modal-title {
+  font-size:16px; font-weight:bold; margin-bottom:14px;
+  text-align:center; color:var(--accent);
+}
+.modal-input {
+  width:100%; padding:10px 12px; border:1px solid var(--accent2);
+  border-radius:8px; background:var(--bg); color:var(--text);
+  font-size:14px; margin-bottom:12px;
+}
+.modal-btn-row { display:flex; gap:8px; }
+.modal-btn {
+  flex:1; padding:10px; border:none; border-radius:8px;
+  font-size:14px; cursor:pointer; transition:all 0.15s;
+}
+.modal-btn-primary { background:var(--accent); color:#fff; }
+.modal-btn-primary:active { transform:scale(0.95); }
+.modal-btn-secondary { background:var(--btn); color:var(--text); border:1px solid var(--accent2); }
+.modal-btn-secondary:active { transform:scale(0.95); }
+.modal-owner-list {
+  display:flex; flex-direction:column; gap:8px; margin-bottom:12px;
+}
+.modal-owner-item {
+  display:flex; align-items:center; gap:8px;
+  padding:10px; background:rgba(255,255,255,0.04); border-radius:8px;
+}
+.modal-owner-name { flex:1; font-size:14px; }
+.modal-owner-name small { color:#888; font-size:11px; }
+.modal-owner-capture {
+  padding:6px 12px; border:none; border-radius:6px;
+  background:var(--accent2); color:#fff; font-size:12px; cursor:pointer;
+}
+.modal-owner-del {
+  padding:6px 12px; border:none; border-radius:6px;
+  background:#c62828; color:#fff; font-size:12px; cursor:pointer;
+}
+.modal-empty { color:#666; font-size:13px; text-align:center; padding:20px 0; }
 
 /* 分隔线 */
 .divider {
@@ -690,9 +727,10 @@ html, body {
   <!-- 右栏: 功能控制 (右手) -->
   <div class="right-panel">
 
-    <!-- 旋转 -->
+    <!-- 旋转 (测距徽章放在左转按钮左边, 靠左对齐, 横排显示) -->
     <div class="section-label">原地旋转</div>
     <div class="rotate-row">
+      <span class="dist-badge" id="distDisplay">📡 --</span>
       <button class="rotate-btn" ontouchstart="event.preventDefault();toggleRotate(0,0,-100,this)" onclick="toggleRotate(0,0,-100,this)">
         <span class="icon">⟲</span>左转
       </button>
@@ -707,9 +745,9 @@ html, body {
     <div class="speed-section">
       <div class="speed-label">速度调节</div>
       <div class="speed-row">
-        <span class="speed-value" id="speedDisplay">50%</span>
+        <span class="speed-value" id="speedDisplay">30%</span>
         <span style="font-size:11px;color:#555;">慢</span>
-        <input type="range" class="speed-slider" id="speedSlider" min="20" max="100" value="50"
+        <input type="range" class="speed-slider" id="speedSlider" min="20" max="100" value="30"
                oninput="updateSpeed(this.value)" onchange="commitSpeed()">
         <span style="font-size:11px;color:#555;">快</span>
       </div>
@@ -717,10 +755,13 @@ html, body {
 
     <div class="divider"></div>
 
-    <!-- 测距 + 云台 (水平排列: 测距在左, 云台在右) -->
+    <!-- 注册/管理按钮 + 云台 (水平排列: 按钮列在左, 云台在右) -->
     <div class="section-label">云台控制</div>
     <div style="display:flex;align-items:center;justify-content:center;gap:8px;">
-      <span class="dist-badge" id="distDisplay" style="background:var(--accent2);padding:6px 10px;border-radius:12px;font-size:13px;color:var(--green);white-space:nowrap;writing-mode:vertical-rl;text-orientation:upright;">📡 --</span>
+      <div class="owner-action-col">
+        <button class="owner-action-btn" ontouchstart="event.preventDefault();openRegisterModal()" onclick="openRegisterModal()">注册</button>
+        <button class="owner-action-btn" ontouchstart="event.preventDefault();openManageModal()" onclick="openManageModal()">管理</button>
+      </div>
       <div class="gimbal-grid">
       <div></div>
       <button ontouchstart="gimbalTilt(-10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(-10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↑</button>
@@ -745,13 +786,8 @@ html, body {
       <button class="mode-btn" id="modeFollow" onclick="setMode('follow')">👣跟随</button>
     </div>
 
-    <!-- 主人管理 (跟随模式依赖) -->
-    <div class="section-label">主人管理 <span id="faceStatus" style="font-size:0.7em;color:#999;"></span></div>
-    <div class="owner-row">
-      <input type="text" id="ownerNameInput" placeholder="主人名字" class="owner-input">
-      <button class="owner-btn" onclick="registerOwner()">注册</button>
-    </div>
-    <div id="ownerList" class="owner-list"></div>
+    <!-- 人脸识别状态 (跟随模式依赖) -->
+    <div class="section-label">人脸识别 <span id="faceStatus" style="font-size:0.7em;color:#999;"></span></div>
 
     <!-- 跟随状态显示 -->
     <div id="followStatusBox" class="follow-status" style="display:none;">
@@ -763,8 +799,31 @@ html, body {
   </div><!-- /main-body -->
 </div>
 
+<!-- ===== 注册主人弹窗 ===== -->
+<div class="modal-overlay" id="registerModal">
+  <div class="modal-box">
+    <div class="modal-title">注册新主人</div>
+    <input type="text" id="modalOwnerName" class="modal-input" placeholder="请输入主人名字">
+    <div class="modal-btn-row">
+      <button class="modal-btn modal-btn-secondary" onclick="closeModal('registerModal')">取消</button>
+      <button class="modal-btn modal-btn-primary" onclick="registerOwner()">注册</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 管理主人弹窗 ===== -->
+<div class="modal-overlay" id="manageModal">
+  <div class="modal-box">
+    <div class="modal-title">主人管理</div>
+    <div id="modalOwnerList" class="modal-owner-list"></div>
+    <div class="modal-btn-row">
+      <button class="modal-btn modal-btn-secondary" onclick="closeModal('manageModal')">关闭</button>
+    </div>
+  </div>
+</div>
+
 <script>
-let speedValue = 50;
+let speedValue = 30;
 let currentPan = 90, currentTilt = 90;
 let activeDirBtn = null;
 let activeRotateBtn = null;
@@ -973,7 +1032,28 @@ async function syncMode() {
 }
 setInterval(syncMode, 1000);
 
-// ===== 主人管理 =====
+// ===== 主人管理 (弹窗) =====
+function openRegisterModal() {
+  document.getElementById('modalOwnerName').value = '';
+  document.getElementById('registerModal').classList.add('show');
+  setTimeout(() => document.getElementById('modalOwnerName').focus(), 100);
+}
+function openManageModal() {
+  document.getElementById('manageModal').classList.add('show');
+  refreshOwners();
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('show');
+}
+// 点击弹窗背景关闭
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.modal-overlay').forEach(ov => {
+    ov.addEventListener('click', function(e) {
+      if (e.target === this) this.classList.remove('show');
+    });
+  });
+});
+
 async function refreshOwners() {
   try {
     const r = await fetch('/api/owner/list');
@@ -983,34 +1063,33 @@ async function refreshOwners() {
       statusEl.textContent = d.ready ? `(已就绪, ${d.owners.length}人)` : '(未就绪)';
       statusEl.style.color = d.ready ? '#00e676' : '#999';
     }
-    const listEl = document.getElementById('ownerList');
+    const listEl = document.getElementById('modalOwnerList');
     if (!listEl) return;
     // 用 DOM API 构造元素，避免 innerHTML 字符串拼接的 XSS 风险
-    // (名字含 <script> 或双引号会破坏 HTML 或注入)
     listEl.innerHTML = '';
     if (!d.owners || d.owners.length === 0) {
       const empty = document.createElement('div');
-      empty.style.cssText = 'color:#666;font-size:0.8em;padding:4px 0;';
+      empty.className = 'modal-empty';
       empty.textContent = '尚未录入主人';
       listEl.appendChild(empty);
       return;
     }
     d.owners.forEach(o => {
       const div = document.createElement('div');
-      div.className = 'owner-item';
+      div.className = 'modal-owner-item';
       const span = document.createElement('span');
-      span.className = 'owner-name';
+      span.className = 'modal-owner-name';
       span.textContent = o.name + ' ';
       const small = document.createElement('small');
       small.textContent = `(${o.samples}样本)`;
       span.appendChild(small);
       const capBtn = document.createElement('button');
-      capBtn.className = 'owner-capture-btn';
+      capBtn.className = 'modal-owner-capture';
       capBtn.textContent = '采集';
       capBtn.addEventListener('click', () => captureOwner(o.id, o.name));
       const delBtn = document.createElement('button');
-      delBtn.className = 'owner-del-btn';
-      delBtn.textContent = '删';
+      delBtn.className = 'modal-owner-del';
+      delBtn.textContent = '删除';
       delBtn.addEventListener('click', () => deleteOwner(o.id));
       div.append(span, capBtn, delBtn);
       listEl.appendChild(div);
@@ -1019,7 +1098,7 @@ async function refreshOwners() {
 }
 
 async function registerOwner() {
-  const input = document.getElementById('ownerNameInput');
+  const input = document.getElementById('modalOwnerName');
   const name = (input.value || '').trim();
   if (!name) { alert('请输入名字'); return; }
   try {
@@ -1030,8 +1109,9 @@ async function registerOwner() {
     const d = await r.json();
     if (d.status === 'ok') {
       input.value = '';
+      closeModal('registerModal');
       await refreshOwners();
-      alert(`已注册 "${name}"，请站到摄像头前点"采集"3次`);
+      alert(`已注册 "${name}"，请点"管理"打开列表，站到摄像头前点"采集"3次`);
     } else {
       alert('注册失败: ' + (d.msg || ''));
     }
@@ -1047,7 +1127,6 @@ async function captureOwner(ownerId, ownerName) {
     const d = await r.json();
     if (d.status === 'ok') {
       await refreshOwners();
-      // 不弹窗，避免刷屏；通过列表中样本数变化体现
     } else {
       alert(d.msg || '采集失败');
     }
