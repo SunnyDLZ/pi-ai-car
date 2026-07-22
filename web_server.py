@@ -5,8 +5,6 @@ Flask + 手机横屏双手控制界面
 功能: 8方向全向移动、原地旋转、滑块调速、云台控制、实时画面、AI 视觉、模式切换
 """
 
-import json
-import base64
 import threading
 import time
 import numpy as np
@@ -773,7 +771,7 @@ html, body {
       <button ontouchstart="gimbalTilt(10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↓</button>
       <div></div>
     </div>
-    </div><!-- /测距+云台 flex -->
+    </div><!-- /注册管理按钮+云台 flex -->
 
     <div class="divider"></div>
 
