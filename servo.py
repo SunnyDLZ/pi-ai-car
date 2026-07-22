@@ -40,8 +40,14 @@ class ServoGimbal:
             self.tilt(SERVO_TILT_CENTER)
         except Exception as e:
             # 归中失败不致命 (pigpio 已连接)，回滚 _initialized 避免后续 pan/tilt 崩溃
+            # 审查 bug: 之前未 stop pigpio 连接，重试时泄漏连接 (pigpio 默认上限 ~64)
             print(f"[Servo] 归中失败: {e}")
             self._initialized = False
+            try:
+                self._pi.stop()
+            except Exception:
+                pass
+            self._pi = None
             raise
 
         print("[Servo] 云台舵机初始化完成")

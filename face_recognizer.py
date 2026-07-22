@@ -125,6 +125,11 @@ class FaceRecognizer:
                         # 单文件损坏不应连累整个 owner
                         try:
                             emb = np.load(os.path.join(owner_path, fname), allow_pickle=False)
+                            # 审查 bug: 校验 shape，dlib 128D embedding 必须是 (128,)
+                            # 否则 identify 的 np.dot 会因 shape 不对齐崩溃
+                            if emb.shape != (128,):
+                                print(f"[FaceRecognizer] 跳过形状异常样本 {owner_dir_name}/{fname}: shape={emb.shape}")
+                                continue
                             embeddings.append(emb)
                         except Exception as e:
                             print(f"[FaceRecognizer] 跳过损坏样本 {owner_dir_name}/{fname}: {e}")
@@ -198,6 +203,13 @@ class FaceRecognizer:
                 print(f"[FaceRecognizer] 注册主人: {name} (id={owner_id})")
                 return owner_id
             except Exception as e:
+                # 审查 bug: 写 meta.json 失败时清理已创建的空目录，
+                # 避免磁盘残留导致该 ID 永久跳号 (makedirs exist_ok=False 会跳过已存在)
+                import shutil
+                try:
+                    shutil.rmtree(owner_path)
+                except Exception:
+                    pass
                 print(f"[FaceRecognizer] 注册失败: {e}")
                 return None
 

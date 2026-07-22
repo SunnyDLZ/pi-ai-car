@@ -63,9 +63,12 @@ class VoiceOutput:
         Args:
             text: 要朗读的文字
             lang: 语言 (zh=中文, en=英文)
+
+        Returns:
+            subprocess.Popen: 当前 TTS 进程引用 (供 say_wait 使用)
         """
         if not self._tts_engine:
-            return
+            return None
 
         # 锁内: 终止上一个 TTS 进程 + 启动新进程
         # 之前 bug: 无锁，多线程 (auto-pilot "前方障碍" + 模式切换播报) 并发 say 时
@@ -108,19 +111,23 @@ class VoiceOutput:
                         proc.terminate()
                     except Exception:
                         pass
-            self._speaking = False
+            # 审查 bug: 并发 say 时，线程 A 的 proc 被 terminate 后 wait 立即返回，
+            # 会误清 _speaking，而线程 B 的 proc 还在播放。
+            # 只有当前 _tts_proc 仍是自己时才清标志
+            with self._tts_lock:
+                if self._tts_proc is proc:
+                    self._speaking = False
 
         threading.Thread(target=_wait_done, daemon=True).start()
+        return proc
 
     def say_wait(self, text, lang="zh"):
         """朗读并阻塞等待完成 (用于关键播报，如启动提示)"""
         if not self._tts_engine:
             return
-        self.say(text, lang)
-        # 复用 say 启动的 proc 引用，等待其结束
-        # 之前 bug: 这里 sleep(len*0.1+1) 重复估时，与 say 的 _wait_done 不一致
-        with self._tts_lock:
-            proc = self._tts_proc
+        # 审查 bug: 之前重新读 _tts_proc，并发时可能等到其他线程的进程
+        # 改用 say 返回的 proc 引用，确保等的是自己的播报
+        proc = self.say(text, lang)
         if proc is not None:
             try:
                 proc.wait(timeout=30)

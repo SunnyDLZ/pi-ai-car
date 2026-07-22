@@ -254,10 +254,17 @@ class MotorController:
         self.move(x=50, y=-100)
 
     def cleanup(self):
-        """释放 GPIO 资源"""
-        self.stop()
-        for pwm in self._pwm_channels.values():
-            pwm.stop()
-        self._pwm_channels.clear()
-        self._initialized = False
+        """释放 GPIO 资源
+
+        审查 bug: 之前 stop() 释放锁后、pwm.stop() 前，并发 move() 可能
+        获取锁设置非零占空比，cleanup 再 stop PWM，竞态窗口内电机瞬间动作。
+        修复: 持锁内先把 _initialized=False (阻止并发 move)，再停 PWM。
+        """
+        with self._lock:
+            if not self._initialized:
+                return
+            self._initialized = False  # 先标记，阻止并发 move() 的 _set_motor
+            for pwm in self._pwm_channels.values():
+                pwm.stop()
+            self._pwm_channels.clear()
         print("[Motor] 资源已释放")

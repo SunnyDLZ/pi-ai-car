@@ -54,6 +54,13 @@ class CSICamera:
             return True
         except Exception as e:
             print(f"[CSICamera] 初始化失败: {e}")
+            # 审查 bug: 之前直接置 None，未 close 摄像头设备句柄
+            # GC 时机不确定，重试 init 时新 Picamera2() 会因设备被占用而永久失败
+            if self._camera is not None:
+                try:
+                    self._camera.close()
+                except Exception:
+                    pass
             self._camera = None
             return False
 
