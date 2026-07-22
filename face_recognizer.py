@@ -202,19 +202,26 @@ class FaceRecognizer:
                 return None
 
     def delete_owner(self, owner_id):
-        """删除主人"""
+        """删除主人
+
+        Returns:
+            bool: True=删除成功, False=主人不存在或文件删除失败
+        """
         import shutil
         with self._lock:
             for i, o in enumerate(self._owners):
                 if o["id"] == owner_id:
+                    # 审查 bug: 之前用 ignore_errors=True，rmtree 部分失败时静默返回，
+                    # 内存里已 pop 但磁盘残留，重启后 _load_registry 重新扫描导致主人"复活"。
+                    # 现在不忽略错误: rmtree 失败则不 pop，保持内存与磁盘一致。
                     try:
-                        shutil.rmtree(o["path"], ignore_errors=True)
-                        self._owners.pop(i)
-                        print(f"[FaceRecognizer] 删除主人: {owner_id}")
-                        return True
+                        shutil.rmtree(o["path"])
                     except Exception as e:
-                        print(f"[FaceRecognizer] 删除失败: {e}")
+                        print(f"[FaceRecognizer] 删除失败 (磁盘文件): {e}")
                         return False
+                    self._owners.pop(i)
+                    print(f"[FaceRecognizer] 删除主人: {owner_id}")
+                    return True
             return False
 
     def capture_and_save_embedding(self, owner_id, frame):
@@ -374,9 +381,10 @@ class FaceRecognizer:
     def draw_detections(self, frame, faces, identifications=None):
         """在画面上绘制人脸框和识别结果 (用于 web 端可视化)
 
-        注意: frame 来自 picamera2 是 RGB，但 cv2 绘图按 BGR 解释颜色，
-        颜色元组按 BGR 写。绿色 (0,255,0) 和红色 (0,0,255) 在 RGB/BGR 下
-        对称反转但巧合一致；其他颜色需注意。
+        注意: frame 来自 picamera2 RGB888 配置，是 RGB 顺序。
+        cv2.rectangle/putText 直接写入像素值，颜色元组按 RGB 解释。
+        所以绿色=(0,255,0)，红色=(255,0,0)。
+        之前 bug: 红色写成 (0,0,255)，在 RGB 帧上实际渲染为蓝色。
         """
         import cv2
         if frame is None:
@@ -385,7 +393,7 @@ class FaceRecognizer:
         for i, face in enumerate(faces):
             x, y, w, h = face["box"]
             name = identifications[i] if i < len(identifications) else None
-            color = (0, 255, 0) if name else (0, 0, 255)  # BGR: 绿=识别到, 红=未知
+            color = (0, 255, 0) if name else (255, 0, 0)  # RGB: 绿=识别到, 红=未知
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             label = name if name else "未知"
             cv2.putText(frame, label, (x, y - 10),

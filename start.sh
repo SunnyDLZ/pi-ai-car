@@ -1,6 +1,7 @@
 #!/bin/bash
 # AI 小车一键启动脚本
-# 使用方式: bash start.sh
+# 使用方式: sudo bash start.sh
+# (需要 sudo: RPi.GPIO 访问 /dev/mem 需要 root 权限)
 
 set -e
 
@@ -25,7 +26,13 @@ if [ ! -d ".venv" ]; then
     echo "  创建虚拟环境..."
     python3 -m venv --system-site-packages .venv
     source .venv/bin/activate
-    pip install -r requirements.txt
+    # 审查 bug: pip install 失败会留下半成品 .venv，下次启动跳过安装直接崩
+    if ! pip install -r requirements.txt; then
+        echo "[!] 依赖安装失败，清理半成品 .venv"
+        deactivate 2>/dev/null || true
+        rm -rf .venv
+        exit 1
+    fi
 else
     source .venv/bin/activate
 fi
@@ -39,4 +46,6 @@ echo "   http://$(hostname -I | awk '{print $1}'):2222"
 echo "========================================"
 echo ""
 
-python3 main.py
+# 审查 bug: 之前用 python3 main.py 未加 sudo，RPi.GPIO 访问 GPIO 需要 root 权限
+# 用 exec 让信号直接到达 python 进程 (Ctrl+C 能正确触发 cleanup)
+exec python3 main.py

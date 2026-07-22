@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""AI 小车 - CSI 摄像头拍照模块"""
+"""AI 小车 - CSI 摄像头拍照模块
+
+DEPRECATED: 由 camera.py (picamera2 方案) 取代，仅保留作独立调试工具。
+主程序不引用本文件。如需拍照测试可直接运行: python3 camera/photo.py
+"""
 
 import subprocess
 

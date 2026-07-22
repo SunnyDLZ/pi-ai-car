@@ -85,6 +85,12 @@ class VisionObstacle:
             sigma = 0.33
             lower = int(max(0, (1.0 - sigma) * med))
             upper = int(min(255, (1.0 + sigma) * med))
+            # 审查 bug: med=0 (暗光/镜头遮挡) 时 lower=upper=0，Canny 退化:
+            #   全黑→无强边→判定全畅通→黑暗中盲目前进 (漏检)
+            #   有零星噪点→全部成强边→判定全阻塞→黑暗中误倒车 (误检)
+            # 兜底: upper<1 时回退到固定阈值
+            if upper < 1:
+                lower, upper = 50, 150
             edges = cv2.Canny(gray, lower, upper)
 
             # 4. 形态学闭运算 — 把相邻边缘连成块，便于找轮廓

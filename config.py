@@ -158,7 +158,8 @@ WEB_PORT = 2222
 # 物体检测置信度阈值
 DETECTION_CONFIDENCE = 0.5
 
-# MobileNet SSD 模型路径 (自动下载)
+# MobileNet SSD 模型路径 (需手动下载放置，不自动联网下载)
+# 下载见 SETUP.md 第 9 节
 MOBILENET_PROTOTXT = "models/MobileNetSSD_deploy.prototxt"
 MOBILENET_MODEL = "models/MobileNetSSD_deploy.caffemodel"
 

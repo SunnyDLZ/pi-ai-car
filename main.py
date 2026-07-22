@@ -53,6 +53,8 @@ class AICar:
         self._mode = "manual"  # manual / auto / voice
         self._mode_lock = threading.Lock()
         self._saved_user_speed = None  # 进入 auto 前保存的用户速度
+        self._auto_thread = None   # 自动巡游线程 (存为实例属性供 cleanup join)
+        self._voice_thread = None  # 语音控制线程
 
         # 信号处理
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -192,10 +194,12 @@ class AICar:
             # 所有模式切换都停车，避免上一模式残留的运动指令继续执行
             self.motor.stop()
 
+            # 同步 WebServer._mode (审查 bug: 之前在锁外调用，AICar._mode 与 WebServer._mode
+            # 短暂不一致，可能导致 web 控制请求在非 manual 模式被接受或反之)
+            if self.web is not None:
+                self.web.set_mode(mode)
+
         print(f"[Main] 切换到模式: {mode}")
-        # 同步 WebServer._mode (语音切换模式时 web 端模式状态需保持一致)
-        if self.web is not None:
-            self.web.set_mode(mode)
         # 语音播报在锁外 (espeak 子进程启动慢，避免长时间持锁阻塞 auto-pilot)
         if mode == "voice":
             self.voice_out.say("语音模式已开启")
@@ -447,7 +451,8 @@ class AICar:
             elif any(w in cmd for w in ["停止", "停", "刹车", "别动"]):
                 self.motor.stop()
                 self.voice_out.say("已停止")
-            elif any(w in cmd for w in ["速度", "加速", "快一点", "快点"]):
+            elif any(w in cmd for w in ["加速", "快一点", "快点"]):
+                # 审查 bug: 之前包含"速度"，用户说"速度慢点"会先命中加速分支误加速
                 speed = min(100, self.motor.get_speed() + 10)
                 self.motor.set_speed(speed)
                 self.voice_out.say(f"速度已到{speed}")
@@ -477,12 +482,12 @@ class AICar:
         """启动主循环"""
         self.init_all()
 
-        # 启动后台线程
-        auto_thread = threading.Thread(target=self._auto_pilot_loop, daemon=True)
-        auto_thread.start()
+        # 启动后台线程 (存为实例属性供 cleanup join)
+        self._auto_thread = threading.Thread(target=self._auto_pilot_loop, daemon=True)
+        self._auto_thread.start()
 
-        voice_thread = threading.Thread(target=self._voice_control_loop, daemon=True)
-        voice_thread.start()
+        self._voice_thread = threading.Thread(target=self._voice_control_loop, daemon=True)
+        self._voice_thread.start()
 
         print("\n💡 使用提示:")
         print(f"   浏览器打开 http://<树莓派IP>:{WEB_PORT} 进入控制台")
@@ -505,9 +510,9 @@ class AICar:
     def cleanup(self):
         """安全释放所有资源
 
-        释放顺序: 先停后台线程 (follower/web) → 再停硬件 → 最后 GPIO 清理。
-        之前 bug: 未停 follower 线程，cleanup 期间 follower 还可能调 motor.move/servo.pan，
-        与 cleanup 的资源释放竞争。
+        释放顺序: 先停后台线程 (follower/auto/voice) → 再停硬件 → 最后 GPIO 清理。
+        之前 bug: 未 join auto/voice 线程，cleanup 期间它们可能调 motor/ultrasonic，
+        而 GPIO 已被释放导致崩溃 (ultrasonic.cleanup 不重置 _initialized)。
         """
         print("\n[Main] 正在关闭系统...")
         self._running = False
@@ -519,11 +524,16 @@ class AICar:
             except Exception as e:
                 print(f"[Main] 停止 follower 异常: {e}")
 
-        # 2. 停 web 服务器 (避免新请求触发 on_mode_change → set_mode → motor.move)
-        # Flask 用 daemon 线程跑，主进程退出时自动结束；这里不显式 shutdown，
-        # 但通过 _running=False 让 auto-pilot/voice 线程退出
+        # 2. join auto/voice 线程 (审查 bug: 之前不 join，cleanup 释放 GPIO 后
+        # auto-pilot 仍可能调 ultrasonic.measure() 崩溃)
+        for t in (self._auto_thread, self._voice_thread):
+            if t and t.is_alive():
+                t.join(timeout=1.5)
 
-        # 3. 停硬件
+        # 3. 停 web 服务器 (避免新请求触发 on_mode_change → set_mode → motor.move)
+        # Flask 用 daemon 线程跑，主进程退出时自动结束；这里不显式 shutdown
+
+        # 4. 停硬件
         if getattr(self.motor, "_initialized", False):
             self.motor.stop()
             self.motor.cleanup()
@@ -538,11 +548,10 @@ class AICar:
             GPIO.cleanup()
         except Exception:
             pass
-        # 仅在语音输出已初始化时才播报
+        # 仅在语音输出已初始化时才播报 (用 say_wait 确保播完再退出)
         try:
             if self.voice_out._tts_engine:
-                self.voice_out.say("小车已关机")
-                time.sleep(0.5)
+                self.voice_out.say_wait("小车已关机")
         except Exception:
             pass
         print("[Main] 系统已安全关闭 ✅")

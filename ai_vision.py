@@ -36,9 +36,17 @@ class AIVision:
             return False
 
         # 加载模型
-        self._net = cv2.dnn.readNetFromCaffe(proto_path, model_path)
-        self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-        self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        # 审查 bug: readNetFromCaffe 在模型文件损坏 (截断/404 HTML 被保存/prototxt 语法错) 时抛 cv2.error
+        # 之前无 try/except，虽然 main.py 兜底了，但模块自身不健壮
+        try:
+            self._net = cv2.dnn.readNetFromCaffe(proto_path, model_path)
+            self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+            self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        except cv2.error as e:
+            print(f"[AIVision] 模型加载失败 (文件可能损坏): {e}")
+            self._net = None
+            self._initialized = False
+            return False
 
         self._initialized = True
         print("[AIVision] MobileNet SSD 模型加载完成")

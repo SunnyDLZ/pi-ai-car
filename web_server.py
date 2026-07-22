@@ -68,10 +68,16 @@ class WebServer:
             if self._mode != "manual":
                 return jsonify({"status": "ignored", "mode": self._mode})
             data = request.get_json(silent=True) or {}
-            x = float(data.get("x", 0))
-            y = float(data.get("y", 0))
-            r = float(data.get("rotation", 0))
-            s = float(data.get("speed", 50))
+            # 审查 bug: 非数字字符串导致 float() 抛 ValueError → 500
+            try:
+                x = float(data.get("x", 0))
+                y = float(data.get("y", 0))
+                r = float(data.get("rotation", 0))
+                s = float(data.get("speed", 50))
+            except (TypeError, ValueError):
+                return jsonify({"status": "error", "msg": "参数必须为数字"}), 400
+            # 限幅，防止异常输入
+            s = max(0, min(100, s))
 
             self._motor.set_speed(s)
             self._motor.move(x, y, r)
@@ -97,12 +103,20 @@ class WebServer:
             if not getattr(self._servo, "_initialized", False):
                 return jsonify({"status": "error", "msg": "舵机未初始化"}), 503
             data = request.get_json(silent=True) or {}
-            pan = data.get("pan")
-            tilt = data.get("tilt")
+
+            # 审查 bug: int("90.5") 或 int("abc") 抛 ValueError → 500
+            def _to_int(v):
+                try:
+                    return int(float(v))
+                except (TypeError, ValueError):
+                    return None
+
+            pan = _to_int(data.get("pan"))
+            tilt = _to_int(data.get("tilt"))
             if pan is not None:
-                self._servo.pan(int(pan))
+                self._servo.pan(pan)
             if tilt is not None:
-                self._servo.tilt(int(tilt))
+                self._servo.tilt(tilt)
             return jsonify({"status": "ok"})
 
         @app.route("/api/distance")
@@ -136,7 +150,8 @@ class WebServer:
 
         @app.route("/api/detect")
         def api_detect():
-            if not self._vision:
+            # 审查 bug: 非 auto 模式下 _latest_detections 不更新，返回 stale 数据
+            if not self._vision or self._mode != "auto":
                 return jsonify({"detections": []})
             with self._frame_lock:
                 return jsonify({"detections": self._latest_detections})
@@ -205,7 +220,17 @@ class WebServer:
             result = self._face_recognizer.capture_and_save_embedding(owner_id, frame)
             if result["ok"]:
                 return jsonify({"status": "ok", "msg": result["msg"]})
-            return jsonify({"status": "error", "msg": result["msg"]}), 400
+            # 审查 bug: 之前统一返回 400，应区分 503/404/400/500
+            msg = result["msg"]
+            if "未初始化" in msg:
+                code = 503
+            elif "未找到主人" in msg:
+                code = 404
+            elif "保存失败" in msg:
+                code = 500
+            else:
+                code = 400
+            return jsonify({"status": "error", "msg": msg}), code
 
         @app.route("/api/owner/delete", methods=["POST"])
         def owner_delete():
@@ -225,8 +250,13 @@ class WebServer:
                     if del_name and st.get("target_name") == del_name:
                         if self._on_mode_change:
                             self._on_mode_change("manual")
+                        else:
+                            self._mode = "manual"
             ok = self._face_recognizer.delete_owner(owner_id)
-            return jsonify({"status": "ok" if ok else "error"})
+            # 审查 bug: 之前删除失败仍返回 HTTP 200，前端无反馈
+            if ok:
+                return jsonify({"status": "ok"})
+            return jsonify({"status": "error", "msg": "删除失败 (主人不存在或文件系统错误)"}), 404
 
         @app.route("/api/follow_state")
         def follow_state():
@@ -287,10 +317,10 @@ class WebServer:
                                 except Exception:
                                     pass
                         else:
-                            # 未就绪时在画面上提示
+                            # 未就绪时在画面上提示 (RGB 红色)
                             cv2.putText(frame, "Face recognizer not ready",
                                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                                        0.7, (0, 0, 255), 2)
+                                        0.7, (255, 0, 0), 2)
 
                     _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
                     yield (b'--frame\r\n'
@@ -316,7 +346,9 @@ class WebServer:
 
             time.sleep(0.05)
 
-    def start(self, threaded=True):
+    def start(self):
+        # 审查 bug: 之前 threaded 参数从未使用，签名误导。删除它。
+        # Flask app.run 默认 threaded=True 已足够处理并发请求。
         threading.Thread(
             target=lambda: self._app.run(
                 host=WEB_HOST, port=WEB_PORT,
@@ -731,6 +763,14 @@ let activeDirBtn = null;
 let activeRotateBtn = null;
 let speedSendTimer = null;
 let currentMove = {x:0, y:0, rotation:0};  // 当前运动方向，sendSpeed 用它保持运动
+let currentMode = 'manual';  // 审查 bug: 追踪当前模式，非 manual 时不发键盘/方向控制请求
+
+// 离开 manual 模式时清理运动状态 (审查 bug: 之前不清理，切回 manual 调滑块会意外移动)
+function clearMoveState() {
+  if (activeDirBtn) { activeDirBtn.classList.remove('active'); activeDirBtn = null; }
+  if (activeRotateBtn) { activeRotateBtn.classList.remove('active'); activeRotateBtn = null; }
+  currentMove = {x:0, y:0, rotation:0};
+}
 
 // ===== 点击切换方向 (点一下持续运动，再点一下停止) =====
 function toggleDir(x, y, r, btn) {
@@ -743,6 +783,10 @@ function toggleDir(x, y, r, btn) {
     stopCar(null);
     return;
   }
+
+  // 审查 bug: 非 manual 模式下方向控制会被服务端 ignore，但 stopCar 会触发 /api/stop 急停切回 manual
+  // 所以非 manual 时只更新 UI 不发请求
+  if (currentMode !== 'manual') return;
 
   // 清除之前的方向按钮
   if (activeDirBtn) activeDirBtn.classList.remove('active');
@@ -773,6 +817,9 @@ function toggleRotate(x, y, r, btn) {
     return;
   }
 
+  // 审查 bug: 非 manual 模式下不发请求 (同 toggleDir)
+  if (currentMode !== 'manual') return;
+
   // 清除之前的旋转按钮
   if (activeRotateBtn) activeRotateBtn.classList.remove('active');
   // 清除方向按钮
@@ -792,9 +839,7 @@ function toggleRotate(x, y, r, btn) {
 
 function stopCar(btn) {
   if (btn) { btn.classList.add('active'); if(navigator.vibrate) navigator.vibrate(20); setTimeout(()=>btn.classList.remove('active'),200); }
-  if (activeDirBtn) { activeDirBtn.classList.remove('active'); activeDirBtn = null; }
-  if (activeRotateBtn) { activeRotateBtn.classList.remove('active'); activeRotateBtn = null; }
-  currentMove = {x:0, y:0, rotation:0};  // 清除方向
+  clearMoveState();
   fetch('/api/stop', {method:'POST'}).catch(()=>{});
 }
 
@@ -816,6 +861,8 @@ function commitSpeed() {
 }
 
 function sendSpeed(s) {
+  // 审查 bug: 非 manual 模式下 /api/control 会被 ignore，不发请求避免无效流量
+  if (currentMode !== 'manual') return;
   // 用当前运动方向 + 新速度发送，不会意外停车
   fetch('/api/control', {
     method:'POST',
@@ -856,15 +903,27 @@ async function gimbalCenter() {
 }
 
 // ===== 模式 =====
-function setMode(mode) {
+async function setMode(mode) {
   // 先更新 UI，再发请求（避免 await 阻塞 UI 响应）
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('mode' + mode.charAt(0).toUpperCase() + mode.slice(1)).classList.add('active');
   if (navigator.vibrate) navigator.vibrate(15);
-  fetch('/api/mode', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({mode})
-  }).catch(()=>{});
+  // 审查 bug: 离开 manual 时清理运动状态，避免切回后调滑块意外移动
+  if (mode !== 'manual') clearMoveState();
+  try {
+    const r = await fetch('/api/mode', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode})
+    });
+    const d = await r.json();
+    // 审查 bug: 服务端拒绝时 (如 follow 未就绪) 回滚 UI 并提示
+    if (d.status !== 'ok') {
+      alert(d.msg || '模式切换失败');
+      syncMode();  // 立即拉回正确状态
+    } else {
+      currentMode = mode;
+    }
+  } catch(e) { alert('网络错误'); }
 }
 
 // ===== 距离轮询 =====
@@ -891,6 +950,11 @@ async function syncMode() {
     const r = await fetch('/api/mode');
     const d = await r.json();
     const mode = d.mode;
+    // 审查 bug: 检测到模式变化时，若离开 manual 则清理运动状态
+    if (mode !== currentMode) {
+      if (mode !== 'manual') clearMoveState();
+      currentMode = mode;
+    }
     document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
     const btn = document.getElementById('mode' + mode.charAt(0).toUpperCase() + mode.slice(1));
     if (btn) btn.classList.add('active');
@@ -986,12 +1050,16 @@ async function captureOwner(ownerId, ownerName) {
 async function deleteOwner(ownerId) {
   if (!confirm('确定删除该主人?')) return;
   try {
-    await fetch('/api/owner/delete', {
+    const r = await fetch('/api/owner/delete', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({owner_id: ownerId})
     });
+    const d = await r.json();
+    if (d.status !== 'ok') {
+      alert(d.msg || '删除失败');
+    }
     await refreshOwners();
-  } catch(e) {}
+  } catch(e) { alert('网络错误'); }
 }
 
 // 跟随状态轮询
@@ -1038,6 +1106,9 @@ const keyMap = {
 const pressedKeys = new Set();
 // 合成所有按下的移动键为单一指令，支持多键组合 (如 W+D 斜向)
 function sendCurrentKeys() {
+  // 审查 bug: 非 manual 模式下松开按键会触发 /api/stop 急停切回 manual
+  // 非 manual 时键盘控制完全静默 (空格急停除外，在 keydown 里单独处理)
+  if (currentMode !== 'manual') return;
   let x = 0, y = 0, r = 0;
   for (const key of pressedKeys) {
     if (key in keyMap) {

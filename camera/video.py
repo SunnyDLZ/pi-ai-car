@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""AI 小车 - CSI 摄像头录像模块"""
+"""AI 小车 - CSI 摄像头录像模块
+
+DEPRECATED: 由 camera.py (picamera2 方案) 取代，仅保留作独立调试工具。
+主程序不引用本文件。如需录像测试可直接运行: python3 camera/video.py
+"""
 
 import subprocess
 
@@ -37,4 +41,9 @@ def record_video_lowres(filename="video_low.mp4", duration=10):
 
 
 if __name__ == "__main__":
-    record_video(duration=5)
+    try:
+        record_video(duration=5)
+    except KeyboardInterrupt:
+        print("\n已中断录像")
+    except subprocess.CalledProcessError as e:
+        print(f"录像失败: {e}")

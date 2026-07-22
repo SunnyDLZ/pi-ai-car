@@ -131,4 +131,7 @@ class Ultrasonic:
         return dist < threshold, dist
 
     def cleanup(self):
+        # 审查 bug: 之前不重置 _initialized，cleanup 后 measure() 仍认为模块可用，
+        # 会访问已释放的 GPIO 导致崩溃 (main.cleanup 释放 GPIO 的竞态关键一环)
+        self._initialized = False
         print("[Ultrasonic] 资源已释放")
