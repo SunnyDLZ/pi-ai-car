@@ -213,7 +213,9 @@ class WebServer:
             """采集当前帧的人脸 embedding 到指定主人"""
             if not self._face_recognizer:
                 return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
-            if not self._face_recognizer.is_ready():
+            # 采集只检查模型就绪 (_initialized)，不要求已有 owner/embedding
+            # (is_ready 要求已有 embedding，新注册的主人 embeds=[] 过不了)
+            if not self._face_recognizer._initialized:
                 return jsonify({"status": "error", "msg": "人脸识别未初始化 (检查 dlib 安装/模型文件)"}), 503
             data = request.get_json(silent=True) or {}
             owner_id = data.get("owner_id")
