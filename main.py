@@ -332,18 +332,12 @@ class AICar:
                     if self._mode != "auto":
                         self.motor.stop()
                         continue
-                    # turn_dir 可能是 "left"/"right"/None。
-                    # 之前 bug: None 时默认 rot=-Y_SLOW (左转)，隐性约束脆弱。
-                    # 显式处理 None: 不转向，仅后退后停止 (后续循环会重新决策)
+                    # turn_dir 来自 _pick_turn_direction (返回 "left"/"right")
+                    # 或 suggested == "backward" 时硬编码 "right"，永远非 None
                     if turn_dir == "right":
                         rot = Y_SLOW
-                    elif turn_dir == "left":
+                    else:  # "left"
                         rot = -Y_SLOW
-                    else:
-                        # turn_dir is None, 不转向
-                        self.motor.stop()
-                        time.sleep(0.4)
-                        continue
                     self.motor.move(rotation=rot)
                 time.sleep(0.4)
             elif turn_dir:
@@ -353,14 +347,12 @@ class AICar:
                     if self._mode != "auto":
                         self.motor.stop()
                         continue
+                    # 此分支 turn_dir 来自 vision suggested_dir，已排除 "backward"/"center"
+                    # 只可能是 "left"/"right"
                     if turn_dir == "right":
                         rot = Y_SLOW
-                    elif turn_dir == "left":
+                    else:  # "left"
                         rot = -Y_SLOW
-                    else:
-                        self.motor.stop()
-                        time.sleep(0.4)
-                        continue
                     self.motor.move(rotation=rot)
                 time.sleep(0.4)
             else:

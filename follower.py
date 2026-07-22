@@ -41,6 +41,7 @@ class Follower:
         self._last_target_name = None    # 上次跟随的主人名 (用于丢失播报)
         self._search_scan_dir = 1        # 找人时的扫视方向 +1/-1
         self._entered_follow = False     # 是否已进入过 follow 模式 (用于初始化 _last_seen_time)
+        self._last_obstacle_warn_time = 0.0  # 上次播报"前方有障碍"的时间 (防重复刷屏)
 
         # 状态字段 (供 web 端读取 + 视频流复用)
         self.state = {
@@ -175,7 +176,12 @@ class Follower:
                     msg=f"前方 {dist:.0f}cm 有障碍，已停",
                     lost=False,
                 )
-                self.car.voice_out.say("前方有障碍")
+                # 防重复播报: 主人持续站在 20cm 内时每 0.5s 循环一次，
+                # 不加限制会反复播报"前方有障碍"。限制 3s 播报一次
+                now = time.time()
+                if now - self._last_obstacle_warn_time > 3.0:
+                    self.car.voice_out.say("前方有障碍")
+                    self._last_obstacle_warn_time = now
                 time.sleep(0.5)
                 continue
 

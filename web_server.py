@@ -121,6 +121,13 @@ class WebServer:
 
         @app.route("/api/distance")
         def api_distance():
+            # auto/follow 模式下 follower/auto-pilot 线程在持续测距，
+            # 此处再调 measure() 会阻塞 50-100ms 并竞争超声波锁。
+            # 改为读 follower 缓存的距离 (与 /api/status 一致)
+            if self._follower and self._mode in ("auto", "follow"):
+                st = self._follower.get_state()
+                return jsonify({"distance": st.get("distance", -1)})
+            # manual/voice 模式下没有线程在测距，直接调 measure()
             if self._ultrasonic:
                 d = self._ultrasonic.measure()
                 return jsonify({"distance": round(d, 1) if d > 0 else -1})
