@@ -390,6 +390,99 @@ class FaceRecognizer:
         with self._lock:
             return self._initialized and any(o["embeddings"] for o in self._owners)
 
+    def diagnose(self):
+        """诊断未就绪的具体原因 (供前端展示准确提示)
+
+        按顺序检查 dlib 安装 → 模型文件 → 主人库，返回第一个失败的环节。
+
+        Returns:
+            dict: {
+                "ready": bool,          # 是否就绪
+                "reason": str,          # 未就绪原因 (ready=True 时为空)
+                "detail": str,          # 更详细的说明/修复建议
+                "dlib_installed": bool,
+                "model_loaded": bool,
+                "owners_count": int,    # 已注册主人数量
+                "samples_count": int,   # 有效 embedding 总数
+            }
+        """
+        with self._lock:
+            owners_count = len(self._owners)
+            samples_count = sum(len(o["embeddings"]) for o in self._owners)
+
+            # 1. 检查 dlib 是否安装
+            try:
+                import dlib  # noqa: F401
+                dlib_installed = True
+            except ImportError:
+                dlib_installed = False
+                return {
+                    "ready": False,
+                    "reason": "未安装 dlib",
+                    "detail": "跟随模式依赖 dlib 人脸识别库。请在树莓派执行: pip install dlib face_recognition (编译耗时较长，详见 SETUP.md 第6节)",
+                    "dlib_installed": False,
+                    "model_loaded": False,
+                    "owners_count": owners_count,
+                    "samples_count": samples_count,
+                }
+
+            # 2. 检查模型文件
+            model_loaded = self._initialized
+            if not model_loaded:
+                # 区分: 模型文件缺失 vs 模型加载失败
+                missing = []
+                if not os.path.exists(_RESOLVED_LANDMARK):
+                    missing.append("shape_predictor_68_face_landmarks.dat")
+                if not os.path.exists(_RESOLVED_RECOGNITION):
+                    missing.append("dlib_face_recognition_resnet_model_v1.dat")
+                if missing:
+                    detail = f"缺失模型文件: {', '.join(missing)}。请下载到 models/ 目录 (详见 SETUP.md 第7节)"
+                else:
+                    detail = "dlib 已安装且模型文件存在，但模型加载失败，请检查模型文件是否损坏"
+                return {
+                    "ready": False,
+                    "reason": "模型未加载" if missing else "模型加载失败",
+                    "detail": detail,
+                    "dlib_installed": True,
+                    "model_loaded": False,
+                    "owners_count": owners_count,
+                    "samples_count": samples_count,
+                }
+
+            # 3. 检查主人库
+            if owners_count == 0:
+                return {
+                    "ready": False,
+                    "reason": "主人库为空",
+                    "detail": "请先点击\"注册\"创建主人，然后站到摄像头前点\"采集\"录入人脸 (至少1个样本)",
+                    "dlib_installed": True,
+                    "model_loaded": True,
+                    "owners_count": 0,
+                    "samples_count": 0,
+                }
+
+            if samples_count == 0:
+                return {
+                    "ready": False,
+                    "reason": "主人未录入人脸",
+                    "detail": f"已注册 {owners_count} 个主人但无有效人脸样本。请点击\"管理\"，站到摄像头前点\"采集\"录入",
+                    "dlib_installed": True,
+                    "model_loaded": True,
+                    "owners_count": owners_count,
+                    "samples_count": 0,
+                }
+
+            # 全部就绪
+            return {
+                "ready": True,
+                "reason": "",
+                "detail": f"已就绪: {owners_count} 个主人, {samples_count} 个样本",
+                "dlib_installed": True,
+                "model_loaded": True,
+                "owners_count": owners_count,
+                "samples_count": samples_count,
+            }
+
     def draw_detections(self, frame, faces, identifications=None):
         """在画面上绘制人脸框和识别结果 (用于 web 端可视化)
 

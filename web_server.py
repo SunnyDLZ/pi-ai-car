@@ -137,9 +137,15 @@ class WebServer:
             mode = data.get("mode", "manual")
             if mode in ("manual", "auto", "voice", "follow"):
                 # follow 前置检查: 与 AICar.set_mode 一致，避免 WebServer._mode 已改但 AICar 拒绝导致状态不一致
+                # 失败时返回 diagnose() 的具体原因，让用户知道该装 dlib / 下模型 / 录入主人
                 if mode == "follow" and self._face_recognizer and not self._face_recognizer.is_ready():
-                    return jsonify({"status": "error",
-                                    "msg": "人脸识别未就绪 (未安装 dlib、模型缺失或主人库为空)"}), 400
+                    diag = self._face_recognizer.diagnose()
+                    return jsonify({
+                        "status": "error",
+                        "msg": f"人脸识别未就绪: {diag['reason']}",
+                        "detail": diag.get("detail", ""),
+                        "diagnosis": diag,
+                    }), 400
                 # 不直接设 self._mode；交给 AICar.set_mode 处理，它会回调 self.set_mode 同步
                 # 这样保证 WebServer._mode 和 AICar._mode 永远一致
                 if self._on_mode_change:
@@ -182,6 +188,13 @@ class WebServer:
             return jsonify(status)
 
         # ========== 主人管理 API ==========
+
+        @app.route("/api/face/diagnose")
+        def face_diagnose():
+            """诊断人脸识别就绪状态，返回具体未就绪原因"""
+            if not self._face_recognizer:
+                return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
+            return jsonify({"status": "ok", "diagnosis": self._face_recognizer.diagnose()})
 
         @app.route("/api/owner/list")
         def owner_list():
@@ -984,7 +997,12 @@ async function setMode(mode) {
     const d = await r.json();
     // 审查 bug: 服务端拒绝时 (如 follow 未就绪) 回滚 UI 并提示
     if (d.status !== 'ok') {
-      alert(d.msg || '模式切换失败');
+      // follow 未就绪时展示具体诊断原因 + 修复建议
+      if (d.detail) {
+        alert(d.msg + '\n\n' + d.detail);
+      } else {
+        alert(d.msg || '模式切换失败');
+      }
       syncMode();  // 立即拉回正确状态
     } else {
       currentMode = mode;
