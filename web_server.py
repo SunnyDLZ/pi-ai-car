@@ -844,6 +844,22 @@ let speedSendTimer = null;
 let currentMove = {x:0, y:0, rotation:0};  // 当前运动方向，sendSpeed 用它保持运动
 let currentMode = 'manual';  // 审查 bug: 追踪当前模式，非 manual 时不发键盘/方向控制请求
 
+// 防 ontouchstart + onclick/onmousedown 双触发:
+// 部分移动浏览器即使 touchstart 调了 preventDefault 仍会合成 click/mouse 事件，
+// 导致 toggle 类按钮 (方向/旋转) 被连续切换两次回到原状 = "点了没反应"；
+// 云台按钮 ontouchstart 未调 preventDefault，mousedown 必然重复触发使 pan/tilt 偏移加倍。
+// 用 350ms 内同按钮去重兜底 (人手快速双击间隔通常 > 350ms，不影响正常操作)。
+let _lastInputBtn = null;
+let _lastInputTime = 0;
+function _guardDoubleFire(btn) {
+  if (!btn) return false;  // stopCar(null) 等无 btn 调用不去重
+  const now = Date.now();
+  if (btn === _lastInputBtn && now - _lastInputTime < 350) return true;
+  _lastInputBtn = btn;
+  _lastInputTime = now;
+  return false;
+}
+
 // 离开 manual 模式时清理运动状态 (审查 bug: 之前不清理，切回 manual 调滑块会意外移动)
 function clearMoveState() {
   if (activeDirBtn) { activeDirBtn.classList.remove('active'); activeDirBtn = null; }
@@ -853,6 +869,7 @@ function clearMoveState() {
 
 // ===== 点击切换方向 (点一下持续运动，再点一下停止) =====
 function toggleDir(x, y, r, btn) {
+  if (_guardDoubleFire(btn)) return;
   if (navigator.vibrate) navigator.vibrate(15);
 
   // 点同一个按钮 = 停止
@@ -886,6 +903,7 @@ function toggleDir(x, y, r, btn) {
 
 // ===== 点击切换旋转 =====
 function toggleRotate(x, y, r, btn) {
+  if (_guardDoubleFire(btn)) return;
   if (navigator.vibrate) navigator.vibrate(15);
 
   // 点同一个按钮 = 停止
@@ -917,6 +935,7 @@ function toggleRotate(x, y, r, btn) {
 }
 
 function stopCar(btn) {
+  if (_guardDoubleFire(btn)) return;
   if (btn) { btn.classList.add('active'); if(navigator.vibrate) navigator.vibrate(20); setTimeout(()=>btn.classList.remove('active'),200); }
   clearMoveState();
   fetch('/api/stop', {method:'POST'}).catch(()=>{});
@@ -952,6 +971,7 @@ function sendSpeed(s) {
 
 // ===== 云台 =====
 async function gimbalPan(delta, btn) {
+  if (_guardDoubleFire(btn)) return;
   btn.classList.add('active');
   if (navigator.vibrate) navigator.vibrate(10);
   currentPan = Math.max(0, Math.min(180, currentPan + delta));
@@ -962,6 +982,7 @@ async function gimbalPan(delta, btn) {
 }
 
 async function gimbalTilt(delta, btn) {
+  if (_guardDoubleFire(btn)) return;
   btn.classList.add('active');
   if (navigator.vibrate) navigator.vibrate(10);
   currentTilt = Math.max(0, Math.min(180, currentTilt + delta));
