@@ -716,15 +716,15 @@ html, body {
   <div class="left-panel">
     <div class="dpad-label">麦克纳姆轮 · 8方向</div>
     <div class="dpad">
-      <button data-act="fl" ontouchstart="event.preventDefault();toggleDir(-70,70,0,this)" onclick="toggleDir(-70,70,0,this)">↖</button>
-      <button data-act="f" ontouchstart="event.preventDefault();toggleDir(0,100,0,this)" onclick="toggleDir(0,100,0,this)">↑</button>
-      <button data-act="fr" ontouchstart="event.preventDefault();toggleDir(70,70,0,this)" onclick="toggleDir(70,70,0,this)">↗</button>
-      <button data-act="sl" ontouchstart="event.preventDefault();toggleDir(-100,0,0,this)" onclick="toggleDir(-100,0,0,this)">←</button>
-      <button class="stop-btn" ontouchstart="event.preventDefault();stopCar(this)" onclick="stopCar(this)">⏹</button>
-      <button data-act="sr" ontouchstart="event.preventDefault();toggleDir(100,0,0,this)" onclick="toggleDir(100,0,0,this)">→</button>
-      <button data-act="bl" ontouchstart="event.preventDefault();toggleDir(-70,-70,0,this)" onclick="toggleDir(-70,-70,0,this)">↙</button>
-      <button data-act="b" ontouchstart="event.preventDefault();toggleDir(0,-100,0,this)" onclick="toggleDir(0,-100,0,this)">↓</button>
-      <button data-act="br" ontouchstart="event.preventDefault();toggleDir(70,-70,0,this)" onclick="toggleDir(70,-70,0,this)">↘</button>
+      <button data-act="fl" onclick="toggleDir(-70,70,0,this)">↖</button>
+      <button data-act="f" onclick="toggleDir(0,100,0,this)">↑</button>
+      <button data-act="fr" onclick="toggleDir(70,70,0,this)">↗</button>
+      <button data-act="sl" onclick="toggleDir(-100,0,0,this)">←</button>
+      <button class="stop-btn" onclick="stopCar(this)">⏹</button>
+      <button data-act="sr" onclick="toggleDir(100,0,0,this)">→</button>
+      <button data-act="bl" onclick="toggleDir(-70,-70,0,this)">↙</button>
+      <button data-act="b" onclick="toggleDir(0,-100,0,this)">↓</button>
+      <button data-act="br" onclick="toggleDir(70,-70,0,this)">↘</button>
     </div>
   </div>
 
@@ -744,10 +744,10 @@ html, body {
     <div class="section-label">原地旋转</div>
     <div class="rotate-row">
       <span class="dist-badge" id="distDisplay">📡 --</span>
-      <button class="rotate-btn" ontouchstart="event.preventDefault();toggleRotate(0,0,-100,this)" onclick="toggleRotate(0,0,-100,this)">
+      <button class="rotate-btn" onclick="toggleRotate(0,0,-100,this)">
         <span class="icon">⟲</span>左转
       </button>
-      <button class="rotate-btn" ontouchstart="event.preventDefault();toggleRotate(0,0,100,this)" onclick="toggleRotate(0,0,100,this)">
+      <button class="rotate-btn" onclick="toggleRotate(0,0,100,this)">
         <span class="icon">⟳</span>右转
       </button>
     </div>
@@ -772,8 +772,8 @@ html, body {
     <div class="section-label">云台控制</div>
     <div style="display:flex;align-items:center;justify-content:center;gap:8px;">
       <div class="owner-action-col">
-        <button class="owner-action-btn" ontouchstart="event.preventDefault();openRegisterModal()" onclick="openRegisterModal()">注册</button>
-        <button class="owner-action-btn" ontouchstart="event.preventDefault();openManageModal()" onclick="openManageModal()">管理</button>
+        <button class="owner-action-btn" onclick="openRegisterModal()">注册</button>
+        <button class="owner-action-btn" onclick="openManageModal()">管理</button>
       </div>
       <div class="gimbal-grid">
       <div></div>
@@ -1206,14 +1206,14 @@ refreshOwners();
 setInterval(refreshOwners, 5000);    // 主人列表 5s 刷新一次
 setInterval(updateFollowState, 500); // 跟随状态 500ms 刷新
 
-// ===== 防止触摸滚动/缩放 (但不阻止滑块拖动) =====
-document.addEventListener('touchmove', function(e) {
-  // 允许 speed-slider 上的触摸移动
-  if (e.target && (e.target.id === 'speedSlider' || e.target.classList.contains('speed-slider'))) {
-    return; // 不阻止
-  }
-  e.preventDefault();
-}, {passive:false});
+// ===== 防止缩放/双击 =====
+// 审查 bug: 之前在 document 上全局 preventDefault touchmove，
+// 在 iOS Safari / 微信内置等移动浏览器上会打断 touchstart→touchend→click 合成链，
+// 导致所有 onclick 按钮点击无反应 (模式/方向/旋转/注册/管理全失效)；
+// 滑块虽能视觉拖动但 oninput 也不触发 (速度数值不变)。
+// 防滚动改由 CSS 完成: html,body 已设 touch-action:none + overflow:hidden，
+// 滑块靠 .speed-slider 的 touch-action:manipulation 正常拖动。
+// gesturestart/dblclick 仍需 JS 阻止 (CSS 无法禁用 iOS 双指/双击缩放)。
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('dblclick', e => e.preventDefault());
 
