@@ -1024,7 +1024,7 @@ async function setMode(mode) {
     if (d.status !== 'ok') {
       // follow 未就绪时展示具体诊断原因 + 修复建议
       if (d.detail) {
-        alert(d.msg + '\n\n' + d.detail);
+        alert(d.msg + '\\n\\n' + d.detail);
       } else {
         alert(d.msg || '模式切换失败');
       }

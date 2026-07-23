@@ -56,7 +56,7 @@
 | 设备 | 接口 | 说明 |
 |:----:|:----:|:----:|
 | CSI 摄像头 | CSI-2 排线接口 | 主摄像头，通过云台舵机控制方向 |
-| USB 摄像头 | USB 2.0/3.0 | 副摄像头，带麦克风 |
+| USB 麦克风 | USB 2.0 | 语音输入 (SpeechRecognition)，非摄像头 |
 | 小喇叭 | 3.5mm 音频口 | TTS 语音输出 |
 
 ## 🚀 快速开始
@@ -87,7 +87,7 @@ bash start.sh
 | 🎮 **8方向全向移动** | ↖↑↗ ←→ ↙↓↘ 麦克纳姆轮全向平移，按住即动、松开即停 |
 | 🔄 **原地旋转** | 左/右原地自转，适合狭窄空间转向 |
 | 🎚 **速度滑块** | 拖动滑块实时调速 (20-100%)，左手控制右手调速 |
-| 🎥 **摄像头** | CSI/USB 双画面切换，MJPEG 实时视频流 |
+| 🎥 **摄像头** | CSI 实时 MJPEG 视频流 (auto 模式叠加视觉避障分析) |
 | 📷 **云台控制** | 上下左右 + 一键归中 |
 | 📡 **超声波** | 实时距离显示，近距预警/危险变色 |
 | 🤖 **自动模式** | AI 自动避障巡游 |
@@ -120,7 +120,7 @@ ai-car/
 ├── motor.py          # L298N 电机驱动 + 麦克纳姆轮运动学
 ├── ultrasonic.py     # HY-SRF05 超声波测距
 ├── servo.py          # SG90 云台舵机控制 (pigpio)
-├── camera.py         # CSI + USB 双摄像头管理
+├── camera.py         # CSI 摄像头管理 (picamera2)
 ├── voice.py          # TTS 语音输出 + STT 语音识别
 ├── ai_vision.py      # MobileNet SSD 物体检测 (20类)
 ├── web_server.py     # Flask Web 控制台 + MJPEG 视频流
@@ -147,7 +147,7 @@ A: 先启动守护进程: sudo pigpiod
 A: 检查:
    - CSI 摄像头排线是否插紧
    - 启用摄像头: sudo raspi-config → Interface Options → Camera
-   - USB 摄像头设备: ls /dev/video*
+   - 视频流地址: http://<树莓派IP>:2222/video_feed
 ```
 
 **Q: 舵机抖动的厉害**

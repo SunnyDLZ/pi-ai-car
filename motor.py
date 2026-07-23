@@ -22,7 +22,7 @@ class MotorController:
 
     def __init__(self):
         self._initialized = False
-        self._pwm_channels = {}  # (pin, pwm_object)
+        self._pwm_channels = {}  # {pin: pwm_object}
         self._speed = MOTOR_SPEED_DEFAULT
         self._lock = threading.Lock()  # 防止多线程同时控制电机
 
