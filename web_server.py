@@ -408,7 +408,7 @@ html, body {
   width:100%; height:100%; overflow:hidden;
   font-family:-apple-system,'Segoe UI',Roboto,sans-serif;
   background:var(--bg); color:var(--text);
-  touch-action:none; user-select:none; -webkit-user-select:none;
+  touch-action:manipulation; user-select:none; -webkit-user-select:none;
 }
 
 /* ===== 竖屏旋转提示 ===== */
@@ -716,15 +716,15 @@ html, body {
   <div class="left-panel">
     <div class="dpad-label">麦克纳姆轮 · 8方向</div>
     <div class="dpad">
-      <button data-act="fl" onclick="toggleDir(-70,70,0,this)">↖</button>
-      <button data-act="f" onclick="toggleDir(0,100,0,this)">↑</button>
-      <button data-act="fr" onclick="toggleDir(70,70,0,this)">↗</button>
-      <button data-act="sl" onclick="toggleDir(-100,0,0,this)">←</button>
-      <button class="stop-btn" onclick="stopCar(this)">⏹</button>
-      <button data-act="sr" onclick="toggleDir(100,0,0,this)">→</button>
-      <button data-act="bl" onclick="toggleDir(-70,-70,0,this)">↙</button>
-      <button data-act="b" onclick="toggleDir(0,-100,0,this)">↓</button>
-      <button data-act="br" onclick="toggleDir(70,-70,0,this)">↘</button>
+      <button data-act="fl" ontouchend="event.preventDefault();toggleDir(-70,70,0,this)" onclick="toggleDir(-70,70,0,this)">↖</button>
+      <button data-act="f" ontouchend="event.preventDefault();toggleDir(0,100,0,this)" onclick="toggleDir(0,100,0,this)">↑</button>
+      <button data-act="fr" ontouchend="event.preventDefault();toggleDir(70,70,0,this)" onclick="toggleDir(70,70,0,this)">↗</button>
+      <button data-act="sl" ontouchend="event.preventDefault();toggleDir(-100,0,0,this)" onclick="toggleDir(-100,0,0,this)">←</button>
+      <button class="stop-btn" ontouchend="event.preventDefault();stopCar(this)" onclick="stopCar(this)">⏹</button>
+      <button data-act="sr" ontouchend="event.preventDefault();toggleDir(100,0,0,this)" onclick="toggleDir(100,0,0,this)">→</button>
+      <button data-act="bl" ontouchend="event.preventDefault();toggleDir(-70,-70,0,this)" onclick="toggleDir(-70,-70,0,this)">↙</button>
+      <button data-act="b" ontouchend="event.preventDefault();toggleDir(0,-100,0,this)" onclick="toggleDir(0,-100,0,this)">↓</button>
+      <button data-act="br" ontouchend="event.preventDefault();toggleDir(70,-70,0,this)" onclick="toggleDir(70,-70,0,this)">↘</button>
     </div>
   </div>
 
@@ -744,10 +744,10 @@ html, body {
     <div class="section-label">原地旋转</div>
     <div class="rotate-row">
       <span class="dist-badge" id="distDisplay">📡 --</span>
-      <button class="rotate-btn" onclick="toggleRotate(0,0,-100,this)">
+      <button class="rotate-btn" ontouchend="event.preventDefault();toggleRotate(0,0,-100,this)" onclick="toggleRotate(0,0,-100,this)">
         <span class="icon">⟲</span>左转
       </button>
-      <button class="rotate-btn" onclick="toggleRotate(0,0,100,this)">
+      <button class="rotate-btn" ontouchend="event.preventDefault();toggleRotate(0,0,100,this)" onclick="toggleRotate(0,0,100,this)">
         <span class="icon">⟳</span>右转
       </button>
     </div>
@@ -772,15 +772,15 @@ html, body {
     <div class="section-label">云台控制</div>
     <div style="display:flex;align-items:center;justify-content:center;gap:8px;">
       <div class="owner-action-col">
-        <button class="owner-action-btn" onclick="openRegisterModal()">注册</button>
-        <button class="owner-action-btn" onclick="openManageModal()">管理</button>
+        <button class="owner-action-btn" ontouchend="event.preventDefault();openRegisterModal()" onclick="openRegisterModal()">注册</button>
+        <button class="owner-action-btn" ontouchend="event.preventDefault();openManageModal()" onclick="openManageModal()">管理</button>
       </div>
       <div class="gimbal-grid">
       <div></div>
       <button ontouchstart="gimbalTilt(-10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(-10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↑</button>
       <div></div>
       <button ontouchstart="gimbalPan(-10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalPan(-10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">←</button>
-      <button class="gimbal-center" onclick="gimbalCenter()">归中</button>
+      <button class="gimbal-center" ontouchend="event.preventDefault();gimbalCenter()" onclick="gimbalCenter()">归中</button>
       <button ontouchstart="gimbalPan(10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalPan(10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">→</button>
       <div></div>
       <button ontouchstart="gimbalTilt(10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↓</button>
@@ -793,10 +793,10 @@ html, body {
     <!-- 模式 -->
     <div class="section-label">运行模式</div>
     <div class="mode-row">
-      <button class="mode-btn active" id="modeManual" onclick="setMode('manual')">🕹手动</button>
-      <button class="mode-btn" id="modeAuto" onclick="setMode('auto')">🤖自动</button>
-      <button class="mode-btn" id="modeVoice" onclick="setMode('voice')">🎤语音</button>
-      <button class="mode-btn" id="modeFollow" onclick="setMode('follow')">👣跟随</button>
+      <button class="mode-btn active" id="modeManual" ontouchend="event.preventDefault();setMode('manual')" onclick="setMode('manual')">🕹手动</button>
+      <button class="mode-btn" id="modeAuto" ontouchend="event.preventDefault();setMode('auto')" onclick="setMode('auto')">🤖自动</button>
+      <button class="mode-btn" id="modeVoice" ontouchend="event.preventDefault();setMode('voice')" onclick="setMode('voice')">🎤语音</button>
+      <button class="mode-btn" id="modeFollow" ontouchend="event.preventDefault();setMode('follow')" onclick="setMode('follow')">👣跟随</button>
     </div>
 
     <!-- 人脸识别状态 (跟随模式依赖) -->
@@ -818,8 +818,8 @@ html, body {
     <div class="modal-title">注册新主人</div>
     <input type="text" id="modalOwnerName" class="modal-input" placeholder="请输入主人名字">
     <div class="modal-btn-row">
-      <button class="modal-btn modal-btn-secondary" onclick="closeModal('registerModal')">取消</button>
-      <button class="modal-btn modal-btn-primary" onclick="registerOwner()">注册</button>
+      <button class="modal-btn modal-btn-secondary" ontouchend="event.preventDefault();closeModal('registerModal')" onclick="closeModal('registerModal')">取消</button>
+      <button class="modal-btn modal-btn-primary" ontouchend="event.preventDefault();registerOwner()" onclick="registerOwner()">注册</button>
     </div>
   </div>
 </div>
@@ -830,7 +830,7 @@ html, body {
     <div class="modal-title">主人管理</div>
     <div id="modalOwnerList" class="modal-owner-list"></div>
     <div class="modal-btn-row">
-      <button class="modal-btn modal-btn-secondary" onclick="closeModal('manageModal')">关闭</button>
+      <button class="modal-btn modal-btn-secondary" ontouchend="event.preventDefault();closeModal('manageModal')" onclick="closeModal('manageModal')">关闭</button>
     </div>
   </div>
 </div>
@@ -844,18 +844,20 @@ let speedSendTimer = null;
 let currentMove = {x:0, y:0, rotation:0};  // 当前运动方向，sendSpeed 用它保持运动
 let currentMode = 'manual';  // 审查 bug: 追踪当前模式，非 manual 时不发键盘/方向控制请求
 
-// 防 ontouchstart + onclick/onmousedown 双触发:
-// 部分移动浏览器即使 touchstart 调了 preventDefault 仍会合成 click/mouse 事件，
-// 导致 toggle 类按钮 (方向/旋转) 被连续切换两次回到原状 = "点了没反应"；
-// 云台按钮 ontouchstart 未调 preventDefault，mousedown 必然重复触发使 pan/tilt 偏移加倍。
-// 用 350ms 内同按钮去重兜底 (人手快速双击间隔通常 > 350ms，不影响正常操作)。
-let _lastInputBtn = null;
+// 防触摸+鼠标双触发 (ontouchend+onclick / ontouchstart+onmousedown):
+// 部分移动浏览器 touch 事件后仍会合成 click/mouse 事件，导致：
+//   - toggle 类按钮被切换两次回到原状 = "点了没反应"
+//   - 云台按钮增量执行两次，偏移加倍
+//   - 模式/注册等非 toggle 按钮虽功能幂等，但发两次请求浪费
+// 用 350ms 内同 key 去重兜底 (人手快速双击间隔通常 > 350ms)。
+// key 可以是 DOM 元素 (按钮) 或字符串 (如 mode 名)。
+let _lastInputKey = null;
 let _lastInputTime = 0;
-function _guardDoubleFire(btn) {
-  if (!btn) return false;  // stopCar(null) 等无 btn 调用不去重
+function _guardDoubleFire(key) {
+  if (!key) return false;
   const now = Date.now();
-  if (btn === _lastInputBtn && now - _lastInputTime < 350) return true;
-  _lastInputBtn = btn;
+  if (key === _lastInputKey && now - _lastInputTime < 350) return true;
+  _lastInputKey = key;
   _lastInputTime = now;
   return false;
 }
@@ -995,6 +997,7 @@ async function gimbalTilt(delta, btn) {
 function gimbalRelease(btn) { btn.classList.remove('active'); }
 
 async function gimbalCenter() {
+  if (_guardDoubleFire('gimbal:center')) return;
   currentPan = 90; currentTilt = 90;
   await fetch('/api/servo', {
     method:'POST', headers:{'Content-Type':'application/json'},
@@ -1004,6 +1007,7 @@ async function gimbalCenter() {
 
 // ===== 模式 =====
 async function setMode(mode) {
+  if (_guardDoubleFire('mode:' + mode)) return;
   // 先更新 UI，再发请求（避免 await 阻塞 UI 响应）
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('mode' + mode.charAt(0).toUpperCase() + mode.slice(1)).classList.add('active');
@@ -1208,11 +1212,12 @@ setInterval(updateFollowState, 500); // 跟随状态 500ms 刷新
 
 // ===== 防止缩放/双击 =====
 // 审查 bug: 之前在 document 上全局 preventDefault touchmove，
-// 在 iOS Safari / 微信内置等移动浏览器上会打断 touchstart→touchend→click 合成链，
-// 导致所有 onclick 按钮点击无反应 (模式/方向/旋转/注册/管理全失效)；
-// 滑块虽能视觉拖动但 oninput 也不触发 (速度数值不变)。
-// 防滚动改由 CSS 完成: html,body 已设 touch-action:none + overflow:hidden，
-// 滑块靠 .speed-slider 的 touch-action:manipulation 正常拖动。
+// 在 iOS Safari / 微信内置等移动浏览器上会打断触摸事件链，
+// 导致所有 onclick 按钮点击无反应、滑块 oninput 不触发。
+// 防滚动改用 CSS: html,body 设 touch-action:manipulation + overflow:hidden；
+// 滑块靠 .speed-slider 的 touch-action:pan-x 正常拖动。
+// 所有点击类按钮统一加 ontouchend (触摸) + onclick (鼠标) 双绑定，
+// 配合 _guardDoubleFire 去重，不依赖浏览器的 click 合成。
 // gesturestart/dblclick 仍需 JS 阻止 (CSS 无法禁用 iOS 双指/双击缩放)。
 document.addEventListener('gesturestart', e => e.preventDefault());
 document.addEventListener('dblclick', e => e.preventDefault());
