@@ -775,22 +775,14 @@ html, body {
 
     <div class="divider"></div>
 
-    <!-- 主人管理: 注册/管理按钮 (移到云台上方) -->
-    <div class="section-label">主人管理</div>
-    <div class="owner-action-col" style="flex-direction:row;justify-content:center;">
-      <button class="owner-action-btn" ontouchend="event.preventDefault();openRegisterModal()" onclick="openRegisterModal()">注册</button>
-      <button class="owner-action-btn" ontouchend="event.preventDefault();openManageModal()" onclick="openManageModal()">管理</button>
-    </div>
-    <!-- 目标 (管理下方, 常驻显示) -->
-    <div class="follow-info-row">目标: <span id="followTarget">-</span></div>
-    <!-- 状态 (目标下方, 常驻显示) -->
-    <div class="follow-info-row">状态: <span id="followMsg">待机</span></div>
-
-    <div class="divider"></div>
-
-    <!-- 云台控制 -->
+    <!-- 注册/管理按钮 + 云台 (水平排列: 按钮列在左, 云台在右) -->
     <div class="section-label">云台控制</div>
-    <div class="gimbal-grid">
+    <div style="display:flex;align-items:center;justify-content:center;gap:8px;">
+      <div class="owner-action-col">
+        <button class="owner-action-btn" ontouchend="event.preventDefault();openRegisterModal()" onclick="openRegisterModal()">注册</button>
+        <button class="owner-action-btn" ontouchend="event.preventDefault();openManageModal()" onclick="openManageModal()">管理</button>
+      </div>
+      <div class="gimbal-grid">
       <div></div>
       <button ontouchstart="gimbalTilt(-10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(-10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↑</button>
       <div></div>
@@ -801,6 +793,11 @@ html, body {
       <button ontouchstart="gimbalTilt(10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↓</button>
       <div></div>
     </div>
+    </div><!-- /注册管理按钮+云台 flex -->
+    <!-- 目标 (云台下方, 常驻显示) -->
+    <div class="follow-info-row">目标: <span id="followTarget">-</span></div>
+    <!-- 状态 (目标下方, 常驻显示) -->
+    <div class="follow-info-row">状态: <span id="followMsg">待机</span></div>
 
     <div class="divider"></div>
 
