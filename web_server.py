@@ -553,25 +553,33 @@ html, body {
 /* 速度滑块 */
 .speed-section {
   display:flex; flex-direction:column; align-items:center; gap:4px;
+  /* 滑块周围禁用浏览器默认触摸平移，手指溢出滑块时不会拖动页面 */
+  touch-action:none;
 }
 .speed-row {
   display:flex; align-items:center; gap:6px; width:100%;
+  touch-action:none;
 }
 .speed-slider {
   flex:1; -webkit-appearance:none; appearance:none;
-  height:18px; border-radius:6px; outline:none;
+  height:24px; border-radius:8px; outline:none;
   background:linear-gradient(to right, var(--accent2), var(--accent));
-  touch-action:pan-x; /* 允许水平拖动 */
+  /* touch-action:none 让滑块完全接管触摸，禁止浏览器默认平移/滚动，
+     这样手指拖出滑块边缘时不会触发"拖动整个页面"。
+     之前用 pan-x 仍允许水平平移，手指右滑出滑块后父元素会接管导致页面被拖动。 */
+  touch-action:none;
   pointer-events:auto;
 }
 .speed-slider::-webkit-slider-thumb {
-  -webkit-appearance:none; width:28px; height:28px;
+  -webkit-appearance:none; width:34px; height:34px;
   border-radius:50%; background:#fff; cursor:grab;
   box-shadow:0 2px 8px rgba(0,0,0,0.5); border:3px solid var(--accent);
+  /* 扩大触摸热区，让手指更容易抓住 thumb，减少滑出概率 */
+  padding:6px; margin-top:-5px;
 }
 .speed-slider:active::-webkit-slider-thumb { cursor:grabbing; transform:scale(1.15); }
 .speed-slider::-moz-range-thumb {
-  width:28px; height:28px; border-radius:50%; background:#fff;
+  width:34px; height:34px; border-radius:50%; background:#fff;
   cursor:grab; border:3px solid var(--accent);
 }
 .speed-value {
