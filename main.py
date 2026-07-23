@@ -163,8 +163,11 @@ class AICar:
 
         # follow 模式前置检查: 人脸识别未就绪则拒绝 (返回不切，WebServer 也会因前置检查不调用到这里)
         if mode == "follow" and not self.face_recognizer.is_ready():
-            print("[Main] 跟随模式不可用: 人脸识别未就绪 (未安装 dlib 或主人库为空)")
-            self.voice_out.say("请先录入主人")
+            # 用 diagnose() 获取准确未就绪原因，避免固定说"请先录入主人"
+            # (实际原因可能是 dlib 未安装 / 模型缺失 / 主人库为空 / 主人未录入人脸)
+            diag = self.face_recognizer.diagnose()
+            print(f"[Main] 跟随模式不可用: {diag['reason']} - {diag['detail']}")
+            self.voice_out.say(f"跟随模式不可用: {diag['reason']}")
             return
 
         with self._mode_lock:
