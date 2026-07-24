@@ -56,6 +56,11 @@ class FaceRecognizer:
         self._encoder = None        # dlib ResNet 128D 编码器
         self._owners = []           # [{id, name, embeddings: [np.ndarray, ...]}, ...]
         self._lock = threading.Lock()
+        # dlib 原生对象 (detector/predictor/encoder) 不是线程安全的 —
+        # follower 线程与 web 采集线程并发调用会在 C++ 层访问非法内存，
+        # 直接 SIGSEGV (exit 139) 崩掉整个进程。所有 dlib 调用必须在该锁内
+        # 串行执行。注意: Python try/except 捕获不了段错误，只能靠锁预防。
+        self._dlib_lock = threading.Lock()
 
     def init(self):
         """加载 dlib 模型和主人库
@@ -293,13 +298,20 @@ class FaceRecognizer:
 
     # ===================== 识别 =====================
 
-    def _detect_and_encode(self, frame, for_enrollment=False):
+    def _detect_and_encode(self, frame, for_enrollment=False,
+                           upsample=None, jittering=None, detect_width=None):
         """检测人脸并计算 128D embedding
 
         Args:
             frame: RGB 图像
-            for_enrollment: True=录入模式 (upsample=1 检测小脸更准, jittering=10 embedding 更鲁棒)
-                            False=识别模式 (upsample=0 加速, jittering=0)
+            for_enrollment: True=录入模式 (默认 upsample=1 检测小脸更准,
+                            jittering=10 embedding 更鲁棒)；False=识别模式
+                            (默认 upsample=0 加速, jittering=0)
+            upsample: 覆盖检测上采样次数 (1=小脸/仰角更灵敏但更慢)
+            jittering: 覆盖 embedding 扰动次数 (>=1 更鲁棒但更慢)
+            detect_width: 检测前先把帧等比缩放到该宽度 (如 320)，HOG 提速
+                          ~4 倍；人脸框坐标按比例还原回原图，关键点定位与
+                          编码仍在原图分辨率上执行 (精度不受影响)
 
         Returns:
             dict: {"ok": bool, "faces": [{"box": (x,y,w,h), "embedding": np.ndarray}], "msg": str}
@@ -312,33 +324,66 @@ class FaceRecognizer:
             if frame.ndim != 3 or frame.shape[2] != 3:
                 return {"ok": False, "faces": [], "msg": "图像格式错误"}
 
-            # 录入用 upsample=1 (慢但准, 小脸不漏), 跟随识别用 upsample=0 (快, ~10FPS 必需)
-            upsample = 1 if for_enrollment else 0
-            # 录入用 jittering=10 (dlib 推荐, 数据增强让 embedding 对姿态/光照更鲁棒)
-            jittering = 10 if for_enrollment else 0
-            dets = self._detector(frame, upsample)
-            if not dets:
-                return {"ok": True, "faces": [], "msg": "未检测到人脸"}
+            if upsample is None:
+                upsample = 1 if for_enrollment else 0
+            if jittering is None:
+                jittering = 10 if for_enrollment else 0
 
-            faces = []
-            for det in dets:
-                shape = self._predictor(frame, det)
-                emb = np.array(self._encoder.compute_face_descriptor(frame, shape, jittering))
-                # dlib.rectangle → (x, y, w, h)
-                box = (det.left(), det.top(), det.width(), det.height())
-                faces.append({"box": box, "embedding": emb})
+            # 可选降采样: 缩小帧跑 HOG 检测 (大头开销)，框坐标按比例还原
+            det_frame = frame
+            scale_back = 1.0
+            if detect_width and frame.shape[1] > detect_width:
+                import cv2
+                ratio = detect_width / float(frame.shape[1])
+                det_frame = cv2.resize(
+                    frame, (detect_width, int(frame.shape[0] * ratio)))
+                scale_back = 1.0 / ratio
+
+            # dlib 非线程安全: detector/predictor/encoder 全程在锁内串行。
+            # 并发调用 (follower 线程 vs web 采集线程) 会 SIGSEGV 崩掉进程。
+            with self._dlib_lock:
+                dets = self._detector(det_frame, upsample)
+                if not dets:
+                    return {"ok": True, "faces": [], "msg": "未检测到人脸"}
+
+                faces = []
+                for det in dets:
+                    if scale_back != 1.0:
+                        # 检测框还原到原图坐标，在原图上做关键点+编码 (保精度)
+                        import dlib
+                        det = dlib.rectangle(
+                            int(det.left() * scale_back),
+                            int(det.top() * scale_back),
+                            int(det.right() * scale_back),
+                            int(det.bottom() * scale_back))
+                        shape = self._predictor(frame, det)
+                        emb = np.array(
+                            self._encoder.compute_face_descriptor(
+                                frame, shape, jittering))
+                    else:
+                        shape = self._predictor(det_frame, det)
+                        emb = np.array(
+                            self._encoder.compute_face_descriptor(
+                                det_frame, shape, jittering))
+                    # dlib.rectangle → (x, y, w, h)
+                    box = (det.left(), det.top(), det.width(), det.height())
+                    faces.append({"box": box, "embedding": emb})
 
             return {"ok": True, "faces": faces, "msg": f"检测到 {len(faces)} 张脸"}
         except Exception as e:
             return {"ok": False, "faces": [], "msg": f"识别异常: {e}"}
 
-    def detect_faces(self, frame):
-        """公开方法: 只检测人脸位置 (不识别身份)
+    def detect_faces(self, frame, upsample=None, jittering=None, detect_width=None):
+        """公开方法: 检测人脸位置 + embedding (不识别身份)
+
+        Args: 同 _detect_and_encode (upsample/jittering/detect_width 可覆盖默认值)
 
         Returns:
             list[dict]: [{"box": (x,y,w,h), "embedding": np.ndarray}, ...] 失败返回 []
         """
-        result = self._detect_and_encode(frame)
+        result = self._detect_and_encode(
+            frame, upsample=upsample, jittering=jittering,
+            detect_width=detect_width)
         if result["ok"]:
             return result["faces"]
         return []
