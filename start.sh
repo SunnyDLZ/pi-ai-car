@@ -37,7 +37,7 @@ else
     source .venv/bin/activate
 fi
 
-# 3. 启动主程序
+# 3. 启动主程序 (崩溃自动重启)
 echo "[3/3] 启动主控程序..."
 echo ""
 echo "========================================"
@@ -46,6 +46,19 @@ echo "   http://$(hostname -I | awk '{print $1}'):2222"
 echo "========================================"
 echo ""
 
-# 审查 bug: 之前用 python3 main.py 未加 sudo，RPi.GPIO 访问 GPIO 需要 root 权限
-# 用 exec 让信号直接到达 python 进程 (Ctrl+C 能正确触发 cleanup)
-exec python3 main.py
+# 崩溃自愈: dlib 人脸识别在底层 C++ 层有 SIGSEGV (exit 139) 风险，
+# 代码内已加线程锁防护，此处再加一层兜底 — 异常退出时自动重启，
+# 避免小车在运行中"死机"失控。
+# 注意 set +e: 主程序非零退出不能触发 set -e 直接终结本脚本
+set +e
+while true; do
+    python3 main.py
+    rc=$?
+    # 0=正常退出, 130=Ctrl+C (SIGINT) → 不重启，正常结束
+    if [ $rc -eq 0 ] || [ $rc -eq 130 ]; then
+        break
+    fi
+    echo ""
+    echo "[!] 主程序异常退出 (code $rc)，3 秒后自动重启... (再按 Ctrl+C 彻底退出)"
+    sleep 3
+done
