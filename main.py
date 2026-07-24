@@ -30,7 +30,7 @@ from follower import Follower
 from web_server import WebServer
 from config import OBSTACLE_WARN, OBSTACLE_SLOW, OBSTACLE_STOP, \
     AUTO_MAX_SPEED, AUTO_SLOW_SPEED, WEB_PORT, VISION_SCAN_ANGLE, FOLLOW_SPEED, \
-    SERVO_PAN_CENTER
+    SERVO_PAN_CENTER, SERVO_TILT_CENTER, FOLLOW_SEARCH_TILTS
 
 
 class AICar:
@@ -193,15 +193,25 @@ class AICar:
             if mode == "auto":
                 self.motor.set_speed(AUTO_MAX_SPEED)
                 # auto 模式靠超声波正前方测距避障，云台必须朝正前方 (pan=90°)。
-                # 超声波装在 pan 轴上，若 pan 偏离 (如上一模式残留)，超声波朝偏
-                # 方向测距 → 测不到正前方障碍 → 猛撞。强制归中 pan。
+                # 超声波装在云台上，pan 偏转会朝偏方向测距、tilt 朝下会把地面
+                # 当成障碍 (贴地回波 ~20-40cm) → 空旷处无故急停/撞上真障碍。
+                # 强制 pan+tilt 双轴归中。
                 if getattr(self.servo, "_initialized", False):
                     try:
                         self.servo.pan(SERVO_PAN_CENTER)
+                        self.servo.tilt(SERVO_TILT_CENTER)
                     except Exception:
                         pass
             elif mode == "follow":
                 self.motor.set_speed(FOLLOW_SPEED)
+                # 主人站立时人脸在小车水平视线上方，云台先回正并微抬头找人
+                # (固定平视看不到脸 — "仰视认不出"的一半根因是"看不见")
+                if getattr(self.servo, "_initialized", False):
+                    try:
+                        self.servo.pan(SERVO_PAN_CENTER)
+                        self.servo.tilt(FOLLOW_SEARCH_TILTS[0])
+                    except Exception:
+                        pass
 
             # 所有模式切换都停车，避免上一模式残留的运动指令继续执行
             self.motor.stop()
@@ -221,20 +231,25 @@ class AICar:
             self.voice_out.say("跟随模式已开启")
 
     def _auto_pilot_loop(self):
-        """自动避障巡游模式 (超声波 + 视觉融合)
+        """自动避障巡游 ("停车测距 + 短促移动" 架构)
 
-        决策流程:
-          1. 超声波测距 → 前方准确距离
-          2. 摄像头帧 → 视觉通行性分析 (左/中/右)
-          3. 融合决策:
-             - dist < 15cm → 急停 + 后退 + 视觉推荐方向转向
-             - 15~30cm 且中部阻塞 → 减速 + 用视觉推荐方向转向避障
-             - 30~50cm → 慢速前进 (视觉中部阻塞时也减速)
-             - >= 50cm 且中部畅通 → 巡航
-             - >= 50cm 但中部阻塞 → 仍要避障 (视觉弥补超声波盲区)
-          4. 转向前云台扫视一眼，提高避障成功率
+        根因修复 (2026-07-24): 之前是"边开边测"，测距数据与实际位置错位 —
+        measure() 5 样本中位数阻塞 50~185ms，期间小车以 30% 速度继续行驶
+        (~5~15cm)；再叠加 640x480 视觉分析 (Pi 上 100~300ms) 和 200ms 循环
+        间隔，一轮决策延迟高达 0.5s+。表现为:
+          - 空旷时: 决策用的是几百 ms 前的旧数据 → 无故急停/转向
+          - 有障碍: 超声波已贴上障碍, 决策还基于"之前还很远"的数据 → 撞上去
+        另外两个加重因素:
+          - 视觉 Canny 单帧误检 (地面纹理/光影判成障碍) 直接触发避障
+          - 单次回波丢失 (斜面/软材质是常态) 立即急停
 
-        速度参数: speed 设为 AUTO_MAX_SPEED (30%)，y=100 → 实际 30%
+        新架构: "测 → 动 → 停 → 测" 循环
+          1. 每次移动都是 ≤0.25s 的"短促脉冲"，脉冲结束立即停车
+          2. 停车状态下测距 (3 样本 ~40ms)，数据与当前位置严格对应
+          3. 视觉分析降采样到 320x240 (快 ~4 倍，不再挤占 CPU)
+          4. 视觉"中部阻塞"需连续 2 帧确认才动作 (单帧误检不触发)
+          5. 单次测距失败不再急停，连续 3 次失败才停车告警
+        盲开窗口被限制在单次脉冲内 (~8cm)，决策永远基于新鲜数据。
         """
         if not getattr(self.motor, "_initialized", False):
             print("[AutoPilot] 电机未初始化，跳过自动巡游线程")
@@ -243,139 +258,127 @@ class AICar:
             print("[AutoPilot] 超声波未初始化，跳过自动巡游线程")
             return
 
-        Y_FULL = 100   # → 实际 30%
+        Y_FULL = 100   # × AUTO_MAX_SPEED(30%) → 实际 30%
         Y_SLOW = 67    # → 实际 ~20%
 
-        print("[AutoPilot] 自动巡游启动 (视觉融合)")
+        BURST_FULL = 0.25     # 巡航脉冲时长 (s) — 盲开窗口 ≤ ~8cm
+        BURST_SLOW = 0.20     # 慢速脉冲
+        BURST_RETREAT = 0.30  # 后退脉冲
+        BURST_TURN = 0.30     # 转向脉冲
+
+        measure_fail_streak = 0     # 连续测距失败计数
+        vision_blocked_streak = 0   # 视觉中部阻塞连续确认计数
+
+        print("[AutoPilot] 自动巡游启动 (停车测距 + 短促移动)")
         while self._running:
             if self.get_mode() != "auto":
-                time.sleep(0.5)
+                time.sleep(0.3)
                 continue
 
-            # === 1. 超声波测距 ===
-            dist = self.ultrasonic.measure()
-            # 同步距离到 follower.state (web 端 /api/distance、/api/status 统一从此读取)
-            # auto 模式不走 follower 线程，不更新则 web 端永远显示 -1
+            # === 1. 停车状态测距 (上一脉冲结束已停车，此处车静止) ===
+            dist = self.ultrasonic.measure(samples=3)
+            # 同步距离到 follower.state (web 端 /api/distance、/api/status 统一读取)
             if self.follower:
                 self.follower.set_distance(round(dist, 1) if dist > 0 else -1)
+
             if dist < 0:
-                with self._mode_lock:
-                    if self._mode == "auto":
-                        self.motor.stop()
-                print("[AutoPilot] 测距失败，已停车")
-                time.sleep(0.1)
-                continue
-
-            # === 2. 视觉通行性分析 ===
-            # 摄像头视角比超声波宽 (~60° vs 15°)，能感知左右障碍
-            vision_info = self._analyze_vision()
-
-            # === 3. 融合决策 ===
-            say_obstacle = False
-            retreat = False
-            turn_dir = None  # "left"/"right"/None
-
-            # 视觉判定中部是否阻塞 (超声波可能没测到)
-            vision_center_blocked = vision_info["ok"] and vision_info["center_blocked"]
-
-            with self._mode_lock:
-                if self._mode != "auto":
-                    continue
-
-                if dist < OBSTACLE_STOP:
-                    # 太近 → 急停 + 后退 + 转向 (用视觉推荐方向)
-                    self.motor.stop()
-                    say_obstacle = True
-                    retreat = True
-                    turn_dir = self._pick_turn_direction(vision_info)
-
-                elif dist < OBSTACLE_SLOW or vision_center_blocked:
-                    # 15~30cm 或视觉发现中部阻塞 → 避障转向
-                    if vision_info["ok"]:
-                        suggested = vision_info["suggested_dir"]
-                        if suggested == "backward":
-                            # 三面都堵 → 后退
+                # 单次失败不急停 — 斜面/软材质/波束外物体回波丢失是常态
+                measure_fail_streak += 1
+                if measure_fail_streak >= 3:
+                    with self._mode_lock:
+                        if self._mode == "auto":
                             self.motor.stop()
-                            retreat = True
-                            turn_dir = "right"  # 后退时随便选个方向
-                        elif suggested == "center":
-                            # 视觉说中部畅通 (但超声波说近) → 信任超声波减速
-                            ratio = (dist - OBSTACLE_STOP) / (OBSTACLE_SLOW - OBSTACLE_STOP) if dist < OBSTACLE_SLOW else 1.0
-                            y_val = int(Y_SLOW * ratio)
-                            self.motor.move(y=y_val)
-                        else:
-                            # 视觉推荐左/右转
-                            self.motor.stop()
-                            turn_dir = suggested
-                            say_obstacle = True
-                    else:
-                        # 视觉不可用 → 回退到旧的超声波减速逻辑
-                        if dist < OBSTACLE_SLOW:
-                            ratio = (dist - OBSTACLE_STOP) / (OBSTACLE_SLOW - OBSTACLE_STOP)
-                            y_val = int(Y_SLOW * ratio)
-                            self.motor.move(y=y_val)
-                        else:
-                            self.motor.move(y=Y_SLOW)
-
-                elif dist < OBSTACLE_WARN:
-                    # 30~50cm → 固定 20% 慢速
-                    self.motor.move(y=Y_SLOW)
-
+                    print("[AutoPilot] 连续 3 次测距失败，已停车 (请检查传感器)")
+                    measure_fail_streak = 0
+                    time.sleep(0.3)
                 else:
-                    # >= 50cm → 巡航 (即使视觉中部阻塞，距离够远也不急转，慢速通过)
-                    if vision_center_blocked and vision_info["ok"]:
-                        print(f"[AutoPilot] 远距但视觉中部阻塞 → 慢速通过")
-                        self.motor.move(y=Y_SLOW)
-                    else:
-                        self.motor.move(y=Y_FULL)
+                    # 数据不可信时慢速短脉冲试探，下一拍重新测
+                    self._auto_burst(y=Y_SLOW, duration=BURST_SLOW)
+                continue
+            measure_fail_streak = 0
 
-            # 锁外: 语音 + sleep (避障动作需持续时间)
-            if say_obstacle:
-                self.voice_out.say("前方障碍", lang="zh")
-
-            if retreat:
-                # 后退 0.5s
-                with self._mode_lock:
-                    if self._mode != "auto":
-                        self.motor.stop()
-                        continue
-                    self.motor.move(y=-Y_SLOW)
-                time.sleep(0.5)
-                # 转向 (用视觉推荐的方向，而非固定方向)
-                if turn_dir:
-                    self._servo_scan_before_turn(turn_dir)
-                with self._mode_lock:
-                    if self._mode != "auto":
-                        self.motor.stop()
-                        continue
-                    # turn_dir 来自 _pick_turn_direction (返回 "left"/"right")
-                    # 或 suggested == "backward" 时硬编码 "right"，永远非 None
-                    if turn_dir == "right":
-                        rot = Y_SLOW
-                    else:  # "left"
-                        rot = -Y_SLOW
-                    self.motor.move(rotation=rot)
-                time.sleep(0.4)
-            elif turn_dir:
-                # 仅转向不后退 (15~30cm 中部阻塞)
-                self._servo_scan_before_turn(turn_dir)
-                with self._mode_lock:
-                    if self._mode != "auto":
-                        self.motor.stop()
-                        continue
-                    # 此分支 turn_dir 来自 vision suggested_dir，已排除 "backward"/"center"
-                    # 只可能是 "left"/"right"
-                    if turn_dir == "right":
-                        rot = Y_SLOW
-                    else:  # "left"
-                        rot = -Y_SLOW
-                    self.motor.move(rotation=rot)
-                time.sleep(0.4)
+            # === 2. 视觉通行性分析 (内部已降采样 320x240) ===
+            vision_info = self._analyze_vision()
+            # 视觉"中部阻塞"需连续 2 帧确认 — 地面纹理/光影会让 Canny 单帧
+            # 误报障碍，这是"空旷时无故急停转向"的根因之一
+            if vision_info["ok"] and vision_info["center_blocked"]:
+                vision_blocked_streak += 1
             else:
-                time.sleep(0.2)
+                vision_blocked_streak = 0
+            vision_center_blocked = vision_blocked_streak >= 2
+
+            # === 3. 融合决策 + 短促脉冲动作 ===
+            if dist < OBSTACLE_STOP:
+                # 太近 (<15cm) → 急停 + 后退 + 转向 (分段执行，每段后重新测距)
+                with self._mode_lock:
+                    if self._mode != "auto":
+                        continue
+                    self.motor.stop()
+                self.voice_out.say("前方障碍", lang="zh")
+                turn_dir = self._pick_turn_direction(vision_info)
+                self._auto_burst(y=-Y_SLOW, duration=BURST_RETREAT)
+                self._servo_scan_before_turn(turn_dir)
+                rot = Y_SLOW if turn_dir == "right" else -Y_SLOW
+                self._auto_burst(rotation=rot, duration=BURST_TURN)
+                vision_blocked_streak = 0
+
+            elif dist < OBSTACLE_SLOW or vision_center_blocked:
+                # 15~30cm 或视觉确认中部阻塞 → 原地转向避障
+                suggested = vision_info.get("suggested_dir", "") if vision_info["ok"] else ""
+                if suggested == "backward":
+                    # 三面都堵 → 后退 + 转向
+                    self._auto_burst(y=-Y_SLOW, duration=BURST_RETREAT)
+                    self._auto_burst(rotation=Y_SLOW, duration=BURST_TURN)
+                elif suggested in ("left", "right"):
+                    self.voice_out.say("前方障碍", lang="zh")
+                    self._servo_scan_before_turn(suggested)
+                    rot = Y_SLOW if suggested == "right" else -Y_SLOW
+                    self._auto_burst(rotation=rot, duration=BURST_TURN)
+                elif dist < OBSTACLE_SLOW:
+                    # 视觉没意见 → 信任超声波，按距离比例慢速贴近
+                    # (ratio 0~1: 越靠近 OBSTACLE_STOP 越慢)
+                    ratio = (dist - OBSTACLE_STOP) / (OBSTACLE_SLOW - OBSTACLE_STOP)
+                    y_val = int(Y_SLOW * max(0.3, ratio))
+                    self._auto_burst(y=y_val, duration=BURST_SLOW)
+                else:
+                    # 视觉确认阻塞但超声波说还远 (>30cm) → 慢速观察性前进
+                    self._auto_burst(y=Y_SLOW, duration=BURST_SLOW)
+                vision_blocked_streak = 0
+
+            elif dist < OBSTACLE_WARN:
+                # 30~50cm → 慢速短脉冲
+                self._auto_burst(y=Y_SLOW, duration=BURST_SLOW)
+
+            else:
+                # ≥50cm → 巡航 (视觉确认中部阻塞则降速通过)
+                if vision_center_blocked:
+                    self._auto_burst(y=Y_SLOW, duration=BURST_SLOW)
+                    vision_blocked_streak = 0
+                else:
+                    self._auto_burst(y=Y_FULL, duration=BURST_FULL)
+
+    def _auto_burst(self, x=0, y=0, rotation=0, duration=0.2):
+        """执行一次限时移动脉冲，结束后立即停车
+
+        保证: ① 盲开窗口 ≤ duration；② 脉冲间车静止，下一拍测距数据新鲜；
+        ③ 模式切换最迟 duration 内生效 (每次脉冲前检查模式)。
+        """
+        with self._mode_lock:
+            if self._mode != "auto":
+                self.motor.stop()
+                return
+            self.motor.move(x=x, y=y, rotation=rotation)
+        time.sleep(duration)
+        with self._mode_lock:
+            self.motor.stop()
 
     def _analyze_vision(self):
-        """抓取摄像头一帧并分析通行性
+        """抓取摄像头一帧并分析通行性 (降采样提速)
+
+        之前在 640x480 全分辨率上跑 Canny+形态学+轮廓，Pi 上每帧 100~300ms，
+        既拖慢 auto 决策循环，又长期挤占 CPU 饿死 Flask/视频流线程。
+        降到 320x240 后快 ~4 倍；左中右三段占比统计对分辨率不敏感，
+        精度损失可忽略 (最小轮廓面积同步按面积比换算)。
 
         Returns:
             dict: vision_obstacle.analyze() 的返回值；不可用时返回空结果
@@ -388,7 +391,9 @@ class AICar:
             frame = self.camera_csi.capture()
             if frame is None:
                 return {"ok": False}
-            return self.vision_obs.analyze(frame)
+            import cv2
+            small = cv2.resize(frame, (320, 240))
+            return self.vision_obs.analyze(small)
         except Exception as e:
             print(f"[AutoPilot] 视觉分析异常: {e}")
             return {"ok": False}
