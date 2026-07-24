@@ -29,7 +29,8 @@ from face_recognizer import FaceRecognizer
 from follower import Follower
 from web_server import WebServer
 from config import OBSTACLE_WARN, OBSTACLE_SLOW, OBSTACLE_STOP, \
-    AUTO_MAX_SPEED, AUTO_SLOW_SPEED, WEB_PORT, VISION_SCAN_ANGLE, FOLLOW_SPEED
+    AUTO_MAX_SPEED, AUTO_SLOW_SPEED, WEB_PORT, VISION_SCAN_ANGLE, FOLLOW_SPEED, \
+    SERVO_PAN_CENTER
 
 
 class AICar:
@@ -191,6 +192,14 @@ class AICar:
             # 设置当前模式速度
             if mode == "auto":
                 self.motor.set_speed(AUTO_MAX_SPEED)
+                # auto 模式靠超声波正前方测距避障，云台必须朝正前方 (pan=90°)。
+                # 超声波装在 pan 轴上，若 pan 偏离 (如上一模式残留)，超声波朝偏
+                # 方向测距 → 测不到正前方障碍 → 猛撞。强制归中 pan。
+                if getattr(self.servo, "_initialized", False):
+                    try:
+                        self.servo.pan(SERVO_PAN_CENTER)
+                    except Exception:
+                        pass
             elif mode == "follow":
                 self.motor.set_speed(FOLLOW_SPEED)
 
@@ -245,6 +254,10 @@ class AICar:
 
             # === 1. 超声波测距 ===
             dist = self.ultrasonic.measure()
+            # 同步距离到 follower.state (web 端 /api/distance、/api/status 统一从此读取)
+            # auto 模式不走 follower 线程，不更新则 web 端永远显示 -1
+            if self.follower:
+                self.follower.set_distance(round(dist, 1) if dist > 0 else -1)
             if dist < 0:
                 with self._mode_lock:
                     if self._mode == "auto":

@@ -83,6 +83,16 @@ class Follower:
         with self._state_lock:
             return dict(self.state)
 
+    def set_distance(self, dist):
+        """更新缓存距离 (供 auto-pilot 线程在 auto 模式下调用)
+
+        auto 模式不走 follower 线程，但 web 端 /api/distance 和 /api/status
+        统一从 follower.state.distance 读取 (避免重复 measure 阻塞)。
+        所以 auto-pilot 测距后需调用此方法同步距离，否则 web 端显示 -1。
+        """
+        with self._state_lock:
+            self.state["distance"] = dist
+
     def _set_state(self, **kwargs):
         with self._state_lock:
             self.state.update(kwargs)
