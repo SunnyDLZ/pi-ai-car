@@ -26,6 +26,11 @@ from config import (
     FOLLOW_TARGET_BOX_RATIO,
     FOLLOW_LOST_TIMEOUT,
     FOLLOW_OBSTACLE_SAFE_DIST,
+    FOLLOW_DETECT_WIDTH,
+    FOLLOW_PAN_LIMIT,
+    FOLLOW_SEARCH_TILTS,
+    FOLLOW_RETRY_INTERVAL,
+    SERVO_PAN_CENTER,
 )
 
 
@@ -40,6 +45,8 @@ class Follower:
         self._last_seen_time = 0.0       # 上次看到主人的时间 (用于丢失判定)
         self._last_target_name = None    # 上次跟随的主人名 (用于丢失播报)
         self._search_scan_dir = 1        # 找人时的扫视方向 +1/-1
+        self._search_tilt_idx = 0        # 找人扫视仰角档位索引 (FOLLOW_SEARCH_TILTS)
+        self._last_sensitive_try = 0.0   # 上次高灵敏检测重试的时间
         self._entered_follow = False     # 是否已进入过 follow 模式 (用于初始化 _last_seen_time)
         self._last_obstacle_warn_time = 0.0  # 上次播报"前方有障碍"的时间 (防重复刷屏)
 
@@ -114,6 +121,15 @@ class Follower:
                 self._last_seen_time = time.time()
                 self._last_target_name = None
                 self._entered_follow = True
+                self._search_tilt_idx = 0
+                # 云台回正并微抬头: 主人站立时人脸在小车水平视线上方，
+                # 平视根本看不到脸 ("仰视认不出"的一半根因是"看不见")
+                if getattr(self.car.servo, "_initialized", False):
+                    try:
+                        self.car.servo.pan(SERVO_PAN_CENTER)
+                        self.car.servo.tilt(FOLLOW_SEARCH_TILTS[0])
+                    except Exception:
+                        pass
 
             # 检查依赖
             if not self.car.face_recognizer.is_ready():
@@ -125,7 +141,8 @@ class Follower:
                 time.sleep(1.0)
                 continue
 
-            # 1. 抓帧 + 检测人脸
+            # 1. 抓帧 + 检测人脸 (降采样 320px，HOG 快 ~4 倍 → 控制周期缩短，
+            #    减少"一冲就过头的"过冲 — 修复跟随不平滑的关键提速)
             frame = self.car.camera_csi.capture()
             if frame is None:
                 # 摄像头捕获失败时更新 state，避免 web 端看到旧状态 (审查 bug 3.7)
@@ -133,16 +150,27 @@ class Follower:
                 time.sleep(0.2)
                 continue
 
-            faces = self.car.face_recognizer.detect_faces(frame)
+            faces = self.car.face_recognizer.detect_faces(
+                frame, detect_width=FOLLOW_DETECT_WIDTH)
 
             # 2. 识别身份 → 筛出主人
-            my_owners = []
-            identifications = []
-            for f in faces:
-                name = self.car.face_recognizer.identify(f)
-                identifications.append(name)
-                if name:
-                    my_owners.append((f, name))
+            my_owners, identifications = self._identify_all(faces)
+
+            # 2.5 仰视/小脸兜底: 快速检测没找到主人时，每 ~1s 做一次高灵敏检测
+            # (upsample=1 检测小脸/仰角 + jittering=1 更鲁棒的 embedding)。
+            # 主人站直时人脸在画面中变小且呈仰视角度 (下巴/鼻孔视角)，
+            # HOG 正面检测器容易漏检 — 这是"贴脸能认出、站起来认不出"的根因。
+            # 开销大 (~0.5-1s)，不能每帧做，限频重试。
+            if not my_owners and \
+                    (time.time() - self._last_sensitive_try) > FOLLOW_RETRY_INTERVAL:
+                self._last_sensitive_try = time.time()
+                retry_faces = self.car.face_recognizer.detect_faces(
+                    frame, upsample=1, jittering=1)
+                if retry_faces:
+                    retry_owners, retry_ids = self._identify_all(retry_faces)
+                    if retry_owners:
+                        faces, my_owners, identifications = \
+                            retry_faces, retry_owners, retry_ids
 
             # 缓存检测结果供视频流复用 (避免视频流线程再跑一次 dlib)
             self._set_state(last_faces=faces, last_ids=identifications)
@@ -158,7 +186,8 @@ class Follower:
             self._last_target_name = target_name
 
             # 4. 超声波兜底: 前方近距障碍强制停
-            dist = self.car.ultrasonic.measure()
+            # samples=3 (默认 5 阻塞 50~185ms 会拖长控制周期加剧过冲)
+            dist = self.car.ultrasonic.measure(samples=3)
             # 把距离写到 state 供 /api/status 读取 (避免它再调一次 measure 阻塞)
             self._set_state(distance=round(dist, 1) if dist > 0 else -1)
 
@@ -205,7 +234,7 @@ class Follower:
             # 6. 控制决策
             self._control(target_name, offset_x, box_ratio, frame_h=h)
 
-            # 7. 云台主动追踪 (微调对准主人)
+            # 7. 云台主动追踪 (微调对准主人，车身移动时云台持续反向补偿保持目标居中)
             self._servo_track(offset_x, box_y + box_h / 2, h)
 
             self._set_state(
@@ -217,27 +246,79 @@ class Follower:
                 msg=f"跟随 {target_name}",
             )
 
-            time.sleep(0.1)  # ~10 FPS
+            time.sleep(0.05)  # 检测提速后控制周期 ~200ms (~5 FPS)
+
+    def _identify_all(self, faces):
+        """对所有人脸识别身份，返回 (主人列表, 身份列表)
+
+        Returns:
+            (my_owners, identifications):
+              my_owners: [(face, name), ...] 识别为主人的人脸
+              identifications: [name|None, ...] 与 faces 等长
+        """
+        my_owners = []
+        identifications = []
+        for f in faces:
+            name = self.car.face_recognizer.identify(f)
+            identifications.append(name)
+            if name:
+                my_owners.append((f, name))
+        return my_owners, identifications
 
     def _control(self, target_name, offset_x, box_ratio, frame_h):
-        """根据偏差控制电机
+        """根据偏差控制电机 ("云台先行 + 比例控制")
+
+        之前 bug (根因): 车身和云台同时直接追人脸偏差 —
+        云台 pan 微调和车身旋转是双控制器抢同一个误差信号，互相震荡；
+        且一检测到位移就满幅 (y=60/rot=±50) 动作，控制周期又长 (~300ms)，
+        一次冲过头人脸就出画面 → "冲出去就丢目标"。
+
+        新策略:
+          1. 云台先行: 人脸偏移先由 _servo_track 用云台吸收 (快速、无惯性)。
+             只有云台偏到 FOLLOW_PAN_LIMIT(35°) 之外，说明靠云台跟不上，
+             车身才按云台偏角比例旋转跟上 (车身转过去后云台自然回中)。
+          2. 比例调速: 前进/后退速度随"距离偏差"线性变化，越接近目标越慢，
+             不再一冲到底。
+          3. 大角度旋转时暂停前后移动 (先对准再走近)，避免螺旋冲出去。
 
         offset_x: -1~1 (画面中心偏移)
         box_ratio: 0~1 (人脸框占画面宽度比)
-
-        区间设计 (审查 bug 3.6): 之前 just_right=[0.85, 1.4] 与 too_far<0.7 / too_close>1.6
-        之间有 [0.7, 0.85) 和 (1.4, 1.6] 两段死区，落入死区时车会无谓停顿。
-        改为连续区间: too_far<0.85, just_right=[0.85, 1.4], too_close>1.4
         """
         target = FOLLOW_TARGET_BOX_RATIO
         too_far = box_ratio < target * 0.85
         too_close = box_ratio > target * 1.4
         just_right = target * 0.85 <= box_ratio <= target * 1.4
 
-        # 左右控制: offset_x
-        # 偏差 <0.15 视为对准, 不旋转
-        needs_rotate = abs(offset_x) > 0.15
-        rot_val = int(offset_x * 50) if needs_rotate else 0  # ±50
+        # --- 车身旋转由云台偏角驱动 (云台先行) ---
+        pan_err = 0
+        if getattr(self.car.servo, "_initialized", False):
+            try:
+                cur_pan, _ = self.car.servo.get_angles()
+                pan_err = cur_pan - SERVO_PAN_CENTER  # >0: 云台向右偏 → 主人在右
+            except Exception:
+                pan_err = 0
+
+        rot_val = 0
+        if abs(pan_err) > FOLLOW_PAN_LIMIT:
+            # 云台跟不上了 → 车身按比例旋转 (偏角越大转越快，限幅 ±50)
+            rot_val = int(max(-50, min(50, pan_err * 1.5)))
+        elif abs(offset_x) > 0.55:
+            # 云台失效(未初始化)时兜底: 人脸已严重偏出画面，直接按偏差比例旋转
+            rot_val = int(offset_x * 45)
+
+        # --- 前后移动按比例调速 ---
+        y_val = 0
+        if too_far:
+            # 距离偏差越大走得越快 (30~60)，接近目标自动减速
+            ratio_gap = target - box_ratio
+            y_val = int(30 + min(30, ratio_gap * 150))
+        elif too_close:
+            ratio_gap = box_ratio - target
+            y_val = -int(20 + min(20, ratio_gap * 100))
+
+        # 大角度旋转时暂停前后移动: 先对准再走近，避免边转边冲画螺旋
+        if abs(rot_val) > 30:
+            y_val = 0
 
         with self.car._mode_lock:
             if self.car._mode != "follow":
@@ -245,19 +326,10 @@ class Follower:
             # set_speed 在锁内执行 (审查 bug 1.2): 之前在锁外执行，可能与 set_mode 恢复用户速度竞态
             self.car.motor.set_speed(FOLLOW_SPEED)
 
-            if too_far:
-                # 远了 → 前进 + 微调对准
-                self.car.motor.move(y=60, rotation=rot_val)
-            elif too_close:
-                # 太近 → 后退 + 微调对准
-                self.car.motor.move(y=-60, rotation=rot_val)
-            elif just_right and not needs_rotate:
-                # 距离和方向都对 → 停下等主人
-                self.car.motor.stop()
-            elif needs_rotate:
-                # 距离合适但偏离 → 原地旋转对准
-                self.car.motor.move(rotation=rot_val)
+            if y_val != 0 or rot_val != 0:
+                self.car.motor.move(y=y_val, rotation=rot_val)
             else:
+                # 距离和方向都合适 → 停下等主人
                 self.car.motor.stop()
 
     def _servo_track(self, offset_x, face_cy, frame_h):
@@ -297,7 +369,7 @@ class Follower:
         lost_duration = now - self._last_seen_time
 
         if lost_duration < FOLLOW_LOST_TIMEOUT:
-            # 短暂丢失 → 原地小幅扫视找人
+            # 短暂丢失 → 原地扫视找人 (水平扫 + 扫到尽头换仰角档位)
             self._set_state(
                 following=False,
                 target_name=self._last_target_name,
@@ -308,18 +380,28 @@ class Follower:
             with self.car._mode_lock:
                 if self.car._mode == "follow":
                     self.car.motor.stop()
-            # 云台左右扫
+            # 云台左右扫；扫到尽头切换仰角档位 (平视→微抬头→高抬头)。
+            # 主人站立时人脸在小车水平视线上方 ~30-45°，固定平视扫视
+            # 永远扫不到脸 — 丢失重搜必须覆盖仰角维度。
             if getattr(self.car.servo, "_initialized", False):
                 try:
                     cur_pan, _ = self.car.servo.get_angles()
                     new_pan = cur_pan + self._search_scan_dir * 20
+                    hit_edge = False
                     if new_pan > 150:
                         self._search_scan_dir = -1
                         new_pan = 150
+                        hit_edge = True
                     elif new_pan < 30:
                         self._search_scan_dir = 1
                         new_pan = 30
+                        hit_edge = True
                     self.car.servo.pan(new_pan)
+                    if hit_edge:
+                        # 换下一个仰角档位继续扫
+                        self._search_tilt_idx = \
+                            (self._search_tilt_idx + 1) % len(FOLLOW_SEARCH_TILTS)
+                        self.car.servo.tilt(FOLLOW_SEARCH_TILTS[self._search_tilt_idx])
                 except Exception:
                     pass
             time.sleep(0.3)
