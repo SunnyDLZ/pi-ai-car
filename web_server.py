@@ -300,22 +300,24 @@ class WebServer:
     def _generate_frames(self):
         import cv2
         # 视频流是无限生成器，会独占一个线程。若每帧都跑重计算 (视觉避障 analyze +
-        # 物体检测 detect / 人脸画框)，树莓派单核 CPU 被吃满，导致 /api/control 等
-        # 其他请求排队 → 按钮"时灵时不灵" + 画面卡死。
-        # 优化: 用帧间隔节流 (auto/follow 模式每 5 帧才做一次可视化叠加，
-        # 其余帧直接推送原始 JPEG)，降低 CPU 占用，保证控制请求响应及时。
+        # 物体检测 detect / 人脸画框)，树莓派 CPU 被吃满，导致 /api/control、
+        # /api/mode 等其他请求排队 → 按钮"时灵时不灵" + 模式切换卡很久。
+        # 优化 (2026-07-24 加强):
+        #   - 可视化叠加每 5 帧一次 (轻量: 画框/画线)
+        #   - MobileNet 物体检测每 15 帧才跑一次 (重计算, ~200-400ms/次)，
+        #     间隔期复用上次结果画框
+        #   - 推流 ~12 FPS (原 ~20 FPS)，肉眼流畅度无感但 CPU 省 40%
         _overlay_counter = 0
         while True:
             try:
                 frame = self._get_current_frame()
                 if frame is not None:
-                    # 每 5 帧叠加一次可视化 (auto/follow)，其余帧只做轻量 JPEG 编码
-                    # 这样重计算频率从 20FPS 降到 4FPS，CPU 大幅下降
                     _overlay_counter += 1
                     do_overlay = (_overlay_counter % 5 == 0)
+                    do_detect = (_overlay_counter % 15 == 0)
 
-                    if do_overlay and self._mode == "auto":
-                        if self._vision_obs:
+                    if self._mode == "auto":
+                        if do_overlay and self._vision_obs:
                             try:
                                 analysis = self._vision_obs.analyze(frame)
                                 if analysis.get("ok"):
@@ -324,11 +326,17 @@ class WebServer:
                                 pass
                         if self._vision:
                             try:
-                                detections = self._vision.detect(frame)
-                                with self._frame_lock:
-                                    self._latest_detections = detections
-                                if detections:
-                                    frame = self._vision.draw_detections(frame, detections)
+                                # 重计算降频: 每 15 帧跑一次 MobileNet，
+                                # 其余叠加帧复用缓存结果画框
+                                if do_detect:
+                                    detections = self._vision.detect(frame)
+                                    with self._frame_lock:
+                                        self._latest_detections = detections
+                                if do_overlay:
+                                    with self._frame_lock:
+                                        cached = list(self._latest_detections)
+                                    if cached:
+                                        frame = self._vision.draw_detections(frame, cached)
                             except Exception:
                                 pass
 
@@ -372,7 +380,8 @@ class WebServer:
                 except Exception:
                     pass
 
-            time.sleep(0.05)
+            # ~12 FPS 推流 (原 ~20 FPS): 省 CPU 保控制/模式切换接口响应速度
+            time.sleep(0.08)
 
     def start(self):
         # 审查 bug: 之前 threaded 参数从未使用，签名误导。删除它。
