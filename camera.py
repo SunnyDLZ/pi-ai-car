@@ -8,7 +8,7 @@ import threading
 import os
 import time
 import numpy as np
-from config import CSI_FRAME_WIDTH, CSI_FRAME_HEIGHT, CSI_FRAME_RATE
+from config import CSI_FRAME_WIDTH, CSI_FRAME_HEIGHT, CSI_FRAME_RATE, CSI_FLIP_180
 
 
 class CSICamera:
@@ -132,10 +132,15 @@ class CSICamera:
         # 会导致内部状态错乱或返回损坏 buffer，用锁串行化
         with self._lock:
             try:
-                return self._camera.capture_array()
+                frame = self._camera.capture_array()
             except Exception as e:
                 print(f"[CSICamera] 捕获失败: {e}")
                 return None
+        # 摄像头物理倒装时 180° 翻转 (上下+左右)，所有下游 (视频流/视觉/人脸) 统一正向
+        # numpy 切片翻转是零拷贝 view，ascontiguousarray 确保内存连续供 cv2/dlib 使用
+        if frame is not None and CSI_FLIP_180:
+            frame = np.ascontiguousarray(frame[::-1, ::-1])
+        return frame
 
     def cleanup(self):
         self._running = False

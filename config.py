@@ -147,6 +147,9 @@ SERVO_TILT_CENTER = 90
 CSI_FRAME_WIDTH = 640
 CSI_FRAME_HEIGHT = 480
 CSI_FRAME_RATE = 30
+# 摄像头物理倒装时画面需 180° 翻转 (上下+左右) 才能正向显示
+# True=倒装(翻转), False=正装(不翻转)
+CSI_FLIP_180 = True
 
 # ========== Web 服务 ==========
 
