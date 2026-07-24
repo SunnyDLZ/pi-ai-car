@@ -1,0 +1,33 @@
+# AI 小车 systemd 服务单元 (可选 — 开机自启 + 崩溃自愈)
+#
+# 用途: 主程序异常退出 (如 dlib SIGSEGV / exit 139) 时由 systemd 自动拉起，
+# 比 start.sh 的重启循环更适合无人值守运行。
+#
+# 安装步骤:
+#   1. 按实际路径修改下面的 WorkingDirectory / ExecStart
+#   2. sudo cp ai-car.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now ai-car
+#
+# 查看日志: journalctl -u ai-car -f
+
+[Unit]
+Description=AI Car main controller (mecanum wheel + vision + follow)
+After=network.target
+# pigpiod 未做成 service 时注释掉下一行即可
+Wants=pigpiod.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/pi/pi-ai-car
+ExecStart=/home/pi/pi-ai-car/.venv/bin/python3 main.py
+# 崩溃自愈: 任何退出 (含 SIGSEGV) 3 秒后重启
+Restart=always
+RestartSec=3
+# 60 秒内重启超过 5 次则放弃 (防止配置错误导致的死循环重启)
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target
