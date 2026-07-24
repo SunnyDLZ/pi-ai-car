@@ -299,14 +299,22 @@ class WebServer:
 
     def _generate_frames(self):
         import cv2
+        # 视频流是无限生成器，会独占一个线程。若每帧都跑重计算 (视觉避障 analyze +
+        # 物体检测 detect / 人脸画框)，树莓派单核 CPU 被吃满，导致 /api/control 等
+        # 其他请求排队 → 按钮"时灵时不灵" + 画面卡死。
+        # 优化: 用帧间隔节流 (auto/follow 模式每 5 帧才做一次可视化叠加，
+        # 其余帧直接推送原始 JPEG)，降低 CPU 占用，保证控制请求响应及时。
+        _overlay_counter = 0
         while True:
             try:
                 frame = self._get_current_frame()
                 if frame is not None:
-                    # auto 模式: 叠加视觉避障分析 + 物体检测
-                    # 注意: 控制线程已在 _auto_pilot_loop 里调过 analyze/detect，
-                    # 这里再调一次是为了 web 端可视化；如性能不足可后续改为读共享缓存
-                    if self._mode == "auto":
+                    # 每 5 帧叠加一次可视化 (auto/follow)，其余帧只做轻量 JPEG 编码
+                    # 这样重计算频率从 20FPS 降到 4FPS，CPU 大幅下降
+                    _overlay_counter += 1
+                    do_overlay = (_overlay_counter % 5 == 0)
+
+                    if do_overlay and self._mode == "auto":
                         if self._vision_obs:
                             try:
                                 analysis = self._vision_obs.analyze(frame)
@@ -325,8 +333,8 @@ class WebServer:
                                 pass
 
                     # follow 模式: 复用 follower 线程的检测结果 (避免重复跑 dlib HOG)
-                    # follower.get_state() 返回 last_faces / last_ids (只读)
-                    elif self._mode == "follow":
+                    # draw_detections 只是画框 (轻量)，但仍节流降低 CPU
+                    elif do_overlay and self._mode == "follow":
                         if self._face_recognizer and self._face_recognizer.is_ready():
                             st = self._follower.get_state() if self._follower else {}
                             faces = st.get("last_faces") or []
@@ -479,11 +487,17 @@ html, body {
 /* ===== 中栏: 摄像头画面 ===== */
 .center-panel {
   flex:2 1 0; min-width:0;
+  display:flex; flex-direction:column; gap:4px;
+  background:transparent;
+}
+/* 摄像头画面容器 (缩小高度: flex 比例从隐式 1 降到 3, 给下方信息行留空间) */
+.cam-frame-wrap {
+  flex:3 1 0; min-height:0;
   background:#000; border-radius:var(--radius); overflow:hidden;
   position:relative;
   display:flex; align-items:center; justify-content:center;
 }
-.center-panel img {
+.cam-frame-wrap img {
   width:100%; height:100%; object-fit:contain;
 }
 .cam-overlay-top {
@@ -735,13 +749,19 @@ html, body {
     </div>
   </div>
 
-  <!-- 中栏: 摄像头 -->
+  <!-- 中栏: 摄像头 + 目标/状态信息 -->
   <div class="center-panel">
-    <img id="cameraFeed" src="/video_feed" alt="摄像头画面">
-    <div class="cam-overlay-top">
-      <span id="aiStatus" style="font-size:11px;color:var(--green);background:rgba(0,0,0,0.5);padding:2px 8px;border-radius:10px;">● LIVE</span>
-      <span></span>
+    <div class="cam-frame-wrap">
+      <img id="cameraFeed" src="/video_feed" alt="摄像头画面">
+      <div class="cam-overlay-top">
+        <span id="aiStatus" style="font-size:11px;color:var(--green);background:rgba(0,0,0,0.5);padding:2px 8px;border-radius:10px;">● LIVE</span>
+        <span></span>
+      </div>
     </div>
+    <!-- 目标 (摄像头下方) -->
+    <div class="follow-info-row">目标: <span id="followTarget">-</span></div>
+    <!-- 状态 (目标下方) -->
+    <div class="follow-info-row">状态: <span id="followMsg">待机</span></div>
   </div>
 
   <!-- 右栏: 功能控制 (右手) -->
@@ -794,10 +814,6 @@ html, body {
       <div></div>
     </div>
     </div><!-- /注册管理按钮+云台 flex -->
-    <!-- 目标 (云台下方, 常驻显示) -->
-    <div class="follow-info-row">目标: <span id="followTarget">-</span></div>
-    <!-- 状态 (目标下方, 常驻显示) -->
-    <div class="follow-info-row">状态: <span id="followMsg">待机</span></div>
 
     <div class="divider"></div>
 
