@@ -101,10 +101,13 @@ class VisionObstacle:
             # 之前 bug: VISION_OBSTACLE_MIN_AREA 已导入但从未使用，小噪点轮廓
             # (如地面纹理、光线斑点) 被一并填充，导致 ratio 偏高误判阻塞。
             # 现在用 contourArea >= MIN_AREA 过滤噪点。
+            # MIN_AREA 按 640x480 标定，调用方可能传入降采样帧 (如 320x240)，
+            # 按像素面积比换算，保证过滤力度与分辨率无关。
             mask = np.zeros_like(edges)
             contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            min_area = VISION_OBSTACLE_MIN_AREA * (h * w) / (640.0 * 480.0)
             filtered = [c for c in contours
-                        if cv2.contourArea(c) >= VISION_OBSTACLE_MIN_AREA]
+                        if cv2.contourArea(c) >= min_area]
             cv2.drawContours(mask, filtered, -1, 255, thickness=cv2.FILLED)
 
             # 6. 按画面左中右三段统计障碍像素占比
