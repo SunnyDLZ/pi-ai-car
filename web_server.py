@@ -83,16 +83,20 @@ class WebServer:
 
         @app.route("/api/stop", methods=["POST"])
         def api_stop():
-            # 急停是最高优先级的安全操作，任何模式都必须响应。
-            # 若当前在 auto/voice 模式下只调 motor.stop()，auto-pilot 线程
-            # 会在 0.2s 内再次 move() 覆盖停车指令，车继续动。
-            # 解决: 先切回 manual (会触发 AICar.set_mode 内的 motor.stop)，
-            # 再 stop() 一次确保电机立即停转。
-            if self._mode != "manual":
-                self._mode = "manual"
-                if self._on_mode_change:
-                    self._on_mode_change("manual")
+            # 急停是最高优先级的安全操作，任何模式都必须响应且必须立即返回。
+            # 之前 bug: 同步调 self._on_mode_change("manual") 会触发 AICar.set_mode，
+            # 内部要获取 _mode_lock；若 auto-pilot 正在 _auto_burst 持锁 (motor.move
+            # 内部还有 motor._lock)，/api/stop 会阻塞等锁，期间车继续动 → "按停止没反应"。
+            # 修复: 先把 WebServer._mode 立即设为 manual (auto-pilot 下一拍会检测到并退出)，
+            # 立即 motor.stop() 停车 (motor._lock 是细粒度锁，持锁时间极短)，然后
+            # 把 set_mode 回调扔到后台线程异步执行，HTTP 响应不等待语音/espeak。
+            self._mode = "manual"
             self._motor.stop()
+            if self._on_mode_change:
+                threading.Thread(
+                    target=self._on_mode_change, args=("manual",),
+                    daemon=True
+                ).start()
             return jsonify({"status": "ok", "mode": "manual"})
 
         @app.route("/api/servo", methods=["POST"])
@@ -761,7 +765,7 @@ html, body {
   <!-- 中栏: 摄像头 + 目标/状态信息 -->
   <div class="center-panel">
     <div class="cam-frame-wrap">
-      <img id="cameraFeed" src="/video_feed" alt="摄像头画面">
+      <img id="cameraFeed" src="/video_feed" alt="摄像头画面" onerror="reconnectVideo()">
       <div class="cam-overlay-top">
         <span id="aiStatus" style="font-size:11px;color:var(--green);background:rgba(0,0,0,0.5);padding:2px 8px;border-radius:10px;">● LIVE</span>
         <span></span>
@@ -873,6 +877,21 @@ let activeRotateBtn = null;
 let speedSendTimer = null;
 let currentMove = {x:0, y:0, rotation:0};  // 当前运动方向，sendSpeed 用它保持运动
 let currentMode = 'manual';  // 审查 bug: 追踪当前模式，非 manual 时不发键盘/方向控制请求
+
+// 视频流断线自动重连: MJPEG 流在浏览器切后台/网络抖动/服务端重启时会断开，
+// img onerror 触发后延迟 1s 重新赋值 src 恢复画面 (修复"切换模式/停止后无图像")
+let _videoReconnectTimer = null;
+function reconnectVideo() {
+  if (_videoReconnectTimer) return;  // 已在等待重连，避免堆积
+  _videoReconnectTimer = setTimeout(() => {
+    const img = document.getElementById('cameraFeed');
+    if (img) {
+      // 加 ?t= 时间戳避免浏览器缓存断开的流
+      img.src = '/video_feed?t=' + Date.now();
+    }
+    _videoReconnectTimer = null;
+  }, 1000);
+}
 
 // 防触摸+鼠标双触发 (ontouchend+onclick / ontouchstart+onmousedown):
 // 部分移动浏览器 touch 事件后仍会合成 click/mouse 事件，导致：

@@ -21,6 +21,7 @@ class CSICamera:
         self._lock = threading.Lock()      # 保护 capture_array 调用 (多线程并发会崩)
         self._thread = None
         self._initialized = False
+        self._fail_streak = 0  # 连续采集失败计数 (用于自动重启)
 
     def init(self):
         """初始化 CSI 摄像头
@@ -125,6 +126,10 @@ class CSICamera:
 
         Returns:
             numpy.ndarray: RGB 图像, 失败返回 None
+
+        自动恢复: picamera2 在高并发 capture (video_feed + auto-pilot 视觉 +
+        follower 人脸检测同时调) 时偶尔内部状态错乱，capture_array 持续抛异常。
+        连续失败 5 次后尝试 stop+start 重启摄像头，避免黑屏后无法自愈。
         """
         if not self._running or not self._camera:
             return None
@@ -133,14 +138,37 @@ class CSICamera:
         with self._lock:
             try:
                 frame = self._camera.capture_array()
+                self._fail_streak = 0
             except Exception as e:
                 print(f"[CSICamera] 捕获失败: {e}")
+                self._fail_streak += 1
+                # 连续失败 5 次 → 重启摄像头尝试自愈 (模式切换/停止后黑屏的根因)
+                if self._fail_streak >= 5:
+                    print(f"[CSICamera] 连续 {self._fail_streak} 次失败，尝试重启摄像头")
+                    self._restart_locked()
                 return None
         # 摄像头物理倒装时 180° 翻转 (上下+左右)，所有下游 (视频流/视觉/人脸) 统一正向
         # numpy 切片翻转是零拷贝 view，ascontiguousarray 确保内存连续供 cv2/dlib 使用
         if frame is not None and CSI_FLIP_180:
             frame = np.ascontiguousarray(frame[::-1, ::-1])
         return frame
+
+    def _restart_locked(self):
+        """重启摄像头 (调用者必须已持有 self._lock)"""
+        try:
+            try:
+                self._camera.stop()
+            except Exception:
+                pass
+            time.sleep(0.2)
+            self._camera.start()
+            # 重启后重置失败计数，给恢复一点时间
+            self._fail_streak = 0
+            print("[CSICamera] 摄像头重启完成")
+        except Exception as e:
+            print(f"[CSICamera] 摄像头重启失败: {e}")
+            # 重启也失败，保留 _running=True，下次 capture 继续尝试
+            self._fail_streak = 0
 
     def cleanup(self):
         self._running = False

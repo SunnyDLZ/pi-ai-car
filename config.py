@@ -79,10 +79,12 @@ MODULE_SIZE = "45mm × 20mm × 15mm"  # 模块尺寸
 OBSTACLE_WARN = 50    # 减速距离: <50cm 开始减速
 OBSTACLE_SLOW = 30    # 渐减速距离: <30cm 继续线性减速到 0
 OBSTACLE_STOP = 15    # 停车距离: <15cm 急停后退转向
+AUTO_CRUISE_DIST = 100  # 巡航距离阈值: >1m 提速到 AUTO_MAX_SPEED，<1m 降到 AUTO_DEFAULT_SPEED
 
 # 自动巡游速度参数 (%)
-AUTO_MAX_SPEED = 30   # 安全距离时最高速
+AUTO_MAX_SPEED = 30   # 安全距离 (>1m) 时最高速
 AUTO_SLOW_SPEED = 20  # 进入减速区 (<50cm) 降到该速度
+AUTO_DEFAULT_SPEED = 20  # 默认速度 (<1m) / 模式进入初速
 
 # ========== 视觉避障参数 (阶段1) ==========
 # 摄像头辅助避障 — 纯 OpenCV 图像分析，无新依赖
