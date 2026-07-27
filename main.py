@@ -437,6 +437,7 @@ class AICar:
           - 模式检查用 get_mode() (短锁)，不长时间持 _mode_lock
           - motor.move/motor.stop 内部已有 motor._lock，无需外层再加 _mode_lock
           - 减少 _mode_lock 持有时间，避免 /api/stop 阻塞
+          - 脉冲结束后无条件停车 (双保险: 模式已切换时也确保停止)
         """
         # 模式检查 (短锁，不持锁期间 sleep)
         if self.get_mode() != "auto":
@@ -445,9 +446,8 @@ class AICar:
         # motor.move 内部有 motor._lock (细粒度)，不与 _mode_lock 嵌套
         self.motor.move(x=x, y=y, rotation=rotation)
         time.sleep(duration)
-        # 再次检查模式 (用户可能在脉冲期间按了停止)
-        if self.get_mode() == "auto":
-            self.motor.stop()
+        # 无条件停车 — 模式已切换时也确保停止 (双保险)
+        self.motor.stop()
 
     def _analyze_vision(self):
         """抓取摄像头一帧并分析通行性 (降采样提速)

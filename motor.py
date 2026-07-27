@@ -115,6 +115,15 @@ class MotorController:
         else:
             direction = 0
 
+        # 低于最小值时 clamp 到最小值 (而非清零)
+        # 之前 bug: 清零会破坏麦轮运动学 — 低速时各轮占空比 < 20% 被清零，
+        # 导致斜向移动/小旋转失效 (用户反馈: 速度 30% 以下按左转右转没反应)。
+        # clamp 到 MIN 保证电机能转，麦轮运动学合成方向正确。
+        # 注意: 必须在缓存命中检查之前做 clamp，否则传入 15 时存的是 20，
+        # 下次再传 15 比较的是 15≠20 → 缓存永远不命中 (修复 2026-07-25)
+        if 0 < speed_pct < MOTOR_SPEED_MIN:
+            speed_pct = MOTOR_SPEED_MIN
+
         # 缓存命中检查 (避免重复 GPIO 调用)
         key = (in1, in2, ena)
         last = self._last_motor_state.get(key)
@@ -131,13 +140,6 @@ class MotorController:
         else:
             GPIO.output(in1, GPIO.LOW)
             GPIO.output(in2, GPIO.LOW)
-
-        # 低于最小值时 clamp 到最小值 (而非清零)
-        # 之前 bug: 清零会破坏麦轮运动学 — 低速时各轮占空比 < 20% 被清零，
-        # 导致斜向移动/小旋转失效 (用户反馈: 速度 30% 以下按左转右转没反应)。
-        # clamp 到 MIN 保证电机能转，麦轮运动学合成方向正确。
-        if 0 < speed_pct < MOTOR_SPEED_MIN:
-            speed_pct = MOTOR_SPEED_MIN
 
         # 只用 ChangeDutyCycle，不销毁/重建 PWM 对象
         # (RPi.GPIO 软件 PWM 重建有时序问题，尤其 BCM12 硬件 PWM 引脚)
