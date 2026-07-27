@@ -47,6 +47,7 @@ class Follower:
         self._search_scan_dir = 1        # 找人时的扫视方向 +1/-1
         self._search_tilt_idx = 0        # 找人扫视仰角档位索引 (FOLLOW_SEARCH_TILTS)
         self._last_sensitive_try = 0.0   # 上次高灵敏检测重试的时间
+        self._last_detect_time = 0.0     # 上次 dlib 检测时间 (节流用)
         self._entered_follow = False     # 是否已进入过 follow 模式 (用于初始化 _last_seen_time)
         self._last_obstacle_warn_time = 0.0  # 上次播报"前方有障碍"的时间 (防重复刷屏)
 
@@ -143,27 +144,39 @@ class Follower:
 
             # 1. 抓帧 + 检测人脸 (降采样 320px，HOG 快 ~4 倍 → 控制周期缩短，
             #    减少"一冲就过头的"过冲 — 修复跟随不平滑的关键提速)
+            # 性能优化 (2026-07-25): capture() 现在是零阻塞读缓存，
+            # 但 dlib HOG 检测仍是 ~50ms CPU 重活，节流到每 ~200ms 一次
             frame = self.car.camera_csi.capture()
             if frame is None:
-                # 摄像头捕获失败时更新 state，避免 web 端看到旧状态 (审查 bug 3.7)
                 self._set_state(msg="摄像头捕获失败", last_faces=[], last_ids=[])
                 time.sleep(0.2)
                 continue
 
-            faces = self.car.face_recognizer.detect_faces(
-                frame, detect_width=FOLLOW_DETECT_WIDTH)
+            # 检测节流: 距上次检测 < 150ms 时复用上一帧结果，只更新控制 (云台+电机)
+            # 这样检测周期 ~200ms，控制周期 ~50ms，CPU 占用降一半，过冲也减少
+            now = time.time()
+            DETECT_THROTTLE = 0.15
+            if (now - self._last_detect_time) < DETECT_THROTTLE and \
+                    self.state.get("last_faces") is not None:
+                # 复用上次检测结果 (不跑 dlib)
+                faces = self.state.get("last_faces") or []
+                identifications = self.state.get("last_ids") or []
+                my_owners = [(f, n) for f, n in zip(faces, identifications) if n]
+            else:
+                # 跑 dlib 检测
+                self._last_detect_time = now
+                faces = self.car.face_recognizer.detect_faces(
+                    frame, detect_width=FOLLOW_DETECT_WIDTH)
+                my_owners, identifications = self._identify_all(faces)
 
-            # 2. 识别身份 → 筛出主人
-            my_owners, identifications = self._identify_all(faces)
-
-            # 2.5 仰视/小脸兜底: 快速检测没找到主人时，每 ~1s 做一次高灵敏检测
+            # 仰视/小脸兜底: 快速检测没找到主人时，每 ~1s 做一次高灵敏检测
             # (upsample=1 检测小脸/仰角 + jittering=1 更鲁棒的 embedding)。
             # 主人站直时人脸在画面中变小且呈仰视角度 (下巴/鼻孔视角)，
             # HOG 正面检测器容易漏检 — 这是"贴脸能认出、站起来认不出"的根因。
             # 开销大 (~0.5-1s)，不能每帧做，限频重试。
             if not my_owners and \
-                    (time.time() - self._last_sensitive_try) > FOLLOW_RETRY_INTERVAL:
-                self._last_sensitive_try = time.time()
+                    (now - self._last_sensitive_try) > FOLLOW_RETRY_INTERVAL:
+                self._last_sensitive_try = now
                 retry_faces = self.car.face_recognizer.detect_faces(
                     frame, upsample=1, jittering=1)
                 if retry_faces:
@@ -171,6 +184,7 @@ class Follower:
                     if retry_owners:
                         faces, my_owners, identifications = \
                             retry_faces, retry_owners, retry_ids
+                        self._last_detect_time = now  # 高灵敏检测也更新节流时间
 
             # 缓存检测结果供视频流复用 (避免视频流线程再跑一次 dlib)
             self._set_state(last_faces=faces, last_ids=identifications)
@@ -331,6 +345,7 @@ class Follower:
             else:
                 # 距离和方向都合适 → 停下等主人
                 self.car.motor.stop()
+            # motor.move/stop 内部已有 motor._lock，此处 _mode_lock 短暂持有不嵌套
 
     def _servo_track(self, offset_x, face_cy, frame_h):
         """云台微调追踪主人

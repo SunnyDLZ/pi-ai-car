@@ -303,89 +303,78 @@ class WebServer:
 
     def _generate_frames(self):
         import cv2
-        # 视频流是无限生成器，会独占一个线程。若每帧都跑重计算 (视觉避障 analyze +
-        # 物体检测 detect / 人脸画框)，树莓派 CPU 被吃满，导致 /api/control、
-        # /api/mode 等其他请求排队 → 按钮"时灵时不灵" + 模式切换卡很久。
-        # 优化 (2026-07-24 加强):
-        #   - 可视化叠加每 5 帧一次 (轻量: 画框/画线)
-        #   - MobileNet 物体检测每 15 帧才跑一次 (重计算, ~200-400ms/次)，
-        #     间隔期复用上次结果画框
-        #   - 推流 ~12 FPS (原 ~20 FPS)，肉眼流畅度无感但 CPU 省 40%
+        # 视频流优化 (2026-07-25):
+        #   - 帧来源改为 camera.capture() (零阻塞读缓存，不再调 capture_array)
+        #   - 推流降到 ~10 FPS (Pi 上 8-12 FPS 已足够)，每帧间隔 100ms
+        #   - 重计算 (MobileNet/dlib) 完全不在视频流线程跑，
+        #     由 follower 线程持续检测并写 state，视频流只读 state 画框
+        #   - JPEG 编码用较低质量 (70) 减小体积，降低带宽 + 编码 CPU
+        #   - 帧拷贝用 .copy() 仅在需要画框时做，纯直出零拷贝
         _overlay_counter = 0
+        _blank_jpeg = None  # 缓存空帧 JPEG，避免每次重新编码
         while True:
             try:
                 frame = self._get_current_frame()
                 if frame is not None:
                     _overlay_counter += 1
+                    # 每 5 帧才画叠加 (画框是轻量操作，但仍降频省 CPU)
                     do_overlay = (_overlay_counter % 5 == 0)
-                    do_detect = (_overlay_counter % 15 == 0)
 
-                    if self._mode == "auto":
-                        if do_overlay and self._vision_obs:
+                    if do_overlay:
+                        # 仅画框时拷贝一帧，避免修改原始帧缓存影响其他消费者
+                        frame = frame.copy()
+
+                        if self._mode == "auto" and self._vision_obs:
                             try:
                                 analysis = self._vision_obs.analyze(frame)
                                 if analysis.get("ok"):
                                     frame = self._vision_obs.draw_overlay(frame, analysis)
                             except Exception:
                                 pass
-                        if self._vision:
-                            try:
-                                # 重计算降频: 每 15 帧跑一次 MobileNet，
-                                # 其余叠加帧复用缓存结果画框
-                                if do_detect:
-                                    detections = self._vision.detect(frame)
-                                    with self._frame_lock:
-                                        self._latest_detections = detections
-                                if do_overlay:
-                                    with self._frame_lock:
-                                        cached = list(self._latest_detections)
-                                    if cached:
-                                        frame = self._vision.draw_detections(frame, cached)
-                            except Exception:
-                                pass
+                        elif self._mode == "follow":
+                            if self._face_recognizer and self._face_recognizer.is_ready():
+                                st = self._follower.get_state() if self._follower else {}
+                                faces = st.get("last_faces") or []
+                                ids = st.get("last_ids") or []
+                                if faces:
+                                    try:
+                                        frame = self._face_recognizer.draw_detections(frame, faces, ids)
+                                    except Exception:
+                                        pass
+                            else:
+                                cv2.putText(frame, "Face recognizer not ready",
+                                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                                            0.7, (255, 0, 0), 2)
+                        # manual 模式不画任何叠加 (最省 CPU)
 
-                    # follow 模式: 复用 follower 线程的检测结果 (避免重复跑 dlib HOG)
-                    # draw_detections 只是画框 (轻量)，但仍节流降低 CPU
-                    elif do_overlay and self._mode == "follow":
-                        if self._face_recognizer and self._face_recognizer.is_ready():
-                            st = self._follower.get_state() if self._follower else {}
-                            faces = st.get("last_faces") or []
-                            ids = st.get("last_ids") or []
-                            if faces:
-                                try:
-                                    frame = self._face_recognizer.draw_detections(frame, faces, ids)
-                                except Exception:
-                                    pass
-                        else:
-                            # 未就绪时在画面上提示 (RGB 红色)
-                            cv2.putText(frame, "Face recognizer not ready",
-                                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                                        0.7, (255, 0, 0), 2)
-
-                    _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                    # JPEG 编码 (质量 70，体积小，编码快)
+                    _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
+                                           [cv2.IMWRITE_JPEG_QUALITY, 70])
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' +
                            jpeg.tobytes() + b'\r\n')
                 else:
-                    blank = np.zeros((240, 320, 3), dtype=np.uint8)
-                    _, jpeg = cv2.imencode('.jpg', blank)
+                    # 帧未就绪 → 输出缓存的空帧 (避免每次重新编码)
+                    if _blank_jpeg is None:
+                        blank = np.zeros((240, 320, 3), dtype=np.uint8)
+                        _, _blank_jpeg = cv2.imencode('.jpg', blank)
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' +
-                           jpeg.tobytes() + b'\r\n')
+                           _blank_jpeg.tobytes() + b'\r\n')
             except Exception as e:
-                # 单帧失败不能让整个视频流断 (浏览器会重连造成雪崩)
                 print(f"[WebServer] _generate_frames 异常: {e}")
                 try:
-                    blank = np.zeros((240, 320, 3), dtype=np.uint8)
-                    _, jpeg = cv2.imencode('.jpg', blank)
+                    if _blank_jpeg is None:
+                        blank = np.zeros((240, 320, 3), dtype=np.uint8)
+                        _, _blank_jpeg = cv2.imencode('.jpg', blank)
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' +
-                           jpeg.tobytes() + b'\r\n')
+                           _blank_jpeg.tobytes() + b'\r\n')
                 except Exception:
                     pass
 
-            # ~12 FPS 推流 (原 ~20 FPS): 省 CPU 保控制/模式切换接口响应速度
-            time.sleep(0.08)
+            # ~10 FPS 推流: 省 CPU 保控制/模式切换接口响应速度
+            time.sleep(0.1)
 
     def start(self):
         # 审查 bug: 之前 threaded 参数从未使用，签名误导。删除它。
@@ -1099,7 +1088,7 @@ async function updateDistance() {
     }
   } catch(e) {}
 }
-setInterval(updateDistance, 800);
+setInterval(updateDistance, 1500);
 
 // ===== 模式同步轮询 =====
 // 语音/自动模式切换会改后端模式状态，前端需轮询保持按钮高亮一致
@@ -1119,7 +1108,7 @@ async function syncMode() {
     // 目标/状态行已常驻显示 (移到管理按钮下方)，无需按模式切换显隐
   } catch(e) {}
 }
-setInterval(syncMode, 1000);
+setInterval(syncMode, 2000);
 
 // ===== 主人管理 (弹窗) =====
 function openRegisterModal() {
@@ -1253,8 +1242,8 @@ async function updateFollowState() {
 
 // 初始化 + 定期刷新
 refreshOwners();
-setInterval(refreshOwners, 5000);    // 主人列表 5s 刷新一次
-setInterval(updateFollowState, 500); // 跟随状态 500ms 刷新
+setInterval(refreshOwners, 10000);   // 主人列表 10s 刷新一次 (低频，省 CPU)
+setInterval(updateFollowState, 1000); // 跟随状态 1s 刷新 (从 500ms 降到 1s)
 
 // ===== 防止缩放/双击 =====
 // 审查 bug: 之前在 document 上全局 preventDefault touchmove，

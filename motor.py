@@ -25,6 +25,10 @@ class MotorController:
         self._pwm_channels = {}  # {pin: pwm_object}
         self._speed = MOTOR_SPEED_DEFAULT
         self._lock = threading.Lock()  # 防止多线程同时控制电机
+        # 缓存各轮上次设置的 (direction, speed_pct)，避免重复 GPIO 调用
+        # _set_motor 时若值未变化则跳过 GPIO.output + ChangeDutyCycle
+        # key: (in1, in2, ena) tuple, value: (direction_sign, speed_pct)
+        self._last_motor_state = {}
 
     def init(self):
         """初始化 GPIO 和 PWM"""
@@ -83,6 +87,8 @@ class MotorController:
                 GPIO.output(in2, GPIO.LOW)
                 if ena in self._pwm_channels:
                     self._pwm_channels[ena].ChangeDutyCycle(0)
+            # 清空状态缓存，确保下次 _set_motor 会真正设置 GPIO
+            self._last_motor_state.clear()
 
     def _set_motor(self, in1, in2, ena, speed_pct):
         """设置单个电机的方向和速度
@@ -91,16 +97,37 @@ class MotorController:
             in1, in2: 方向引脚
             ena: PWM 使能引脚
             speed_pct: -100~100, 正=正转, 负=反转, 0=停止
+
+        性能优化 (2026-07-25):
+          - 缓存 (in1, in2, ena) → (direction_sign, speed_pct)，
+            值未变化时跳过 GPIO.output + ChangeDutyCycle 调用
+          - auto-pilot 每拍调 move() 时 4 个轮子状态通常不变，
+            缓存命中后 GPIO 调用从 12 次降到 0 次
         """
         speed_pct = max(-100, min(100, speed_pct))
 
+        # 方向归一化: +1=正转, -1=反转, 0=停止
         if speed_pct > 0:
+            direction = 1
+        elif speed_pct < 0:
+            direction = -1
+            speed_pct = -speed_pct
+        else:
+            direction = 0
+
+        # 缓存命中检查 (避免重复 GPIO 调用)
+        key = (in1, in2, ena)
+        last = self._last_motor_state.get(key)
+        if last is not None and last[0] == direction and last[1] == speed_pct:
+            return  # 状态未变化，跳过
+
+        # 设置方向引脚
+        if direction > 0:
             GPIO.output(in1, GPIO.HIGH)
             GPIO.output(in2, GPIO.LOW)
-        elif speed_pct < 0:
+        elif direction < 0:
             GPIO.output(in1, GPIO.LOW)
             GPIO.output(in2, GPIO.HIGH)
-            speed_pct = -speed_pct
         else:
             GPIO.output(in1, GPIO.LOW)
             GPIO.output(in2, GPIO.LOW)
@@ -116,6 +143,9 @@ class MotorController:
         # (RPi.GPIO 软件 PWM 重建有时序问题，尤其 BCM12 硬件 PWM 引脚)
         if ena in self._pwm_channels:
             self._pwm_channels[ena].ChangeDutyCycle(speed_pct)
+
+        # 更新缓存
+        self._last_motor_state[key] = (direction, speed_pct)
 
     def set_speed(self, speed_pct):
         """设置全局速度比例

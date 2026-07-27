@@ -287,9 +287,9 @@ class AICar:
                 # 单次失败不急停 — 斜面/软材质/波束外物体回波丢失是常态
                 measure_fail_streak += 1
                 if measure_fail_streak >= 3:
-                    with self._mode_lock:
-                        if self._mode == "auto":
-                            self.motor.stop()
+                    # 用 get_mode() 替代持锁检查，避免与 /api/stop 争 _mode_lock
+                    if self.get_mode() == "auto":
+                        self.motor.stop()
                     print("[AutoPilot] 连续 3 次测距失败，已停车 (请检查传感器)")
                     measure_fail_streak = 0
                     time.sleep(0.3)
@@ -324,10 +324,9 @@ class AICar:
             # === 3. 执行动作 ===
             if dist < OBSTACLE_STOP:
                 # 太近 (<15cm) → 停车找路
-                with self._mode_lock:
-                    if self._mode != "auto":
-                        continue
-                    self.motor.stop()
+                if self.get_mode() != "auto":
+                    continue
+                self.motor.stop()
                 self.voice_out.say("前方障碍", lang="zh")
                 # 先退一点腾出空间 (<15cm 时车身可能已贴近障碍)
                 self.motor.set_speed(AUTO_DEFAULT_SPEED)
@@ -346,7 +345,9 @@ class AICar:
 
             else:
                 # 前方有空间 → 前进 (速度已按距离渐变)
-                self.motor.set_speed(current_speed)
+                # 仅当速度变化时才调 set_speed (避免每拍重复调)
+                if self.motor.get_speed() != current_speed:
+                    self.motor.set_speed(current_speed)
                 self._auto_burst(y=100, duration=BURST_FORWARD)
 
     def _find_path_and_turn(self):
@@ -432,16 +433,20 @@ class AICar:
     def _auto_burst(self, x=0, y=0, rotation=0, duration=0.2):
         """执行一次限时移动脉冲，结束后立即停车
 
-        保证: ① 盲开窗口 ≤ duration；② 脉冲间车静止，下一拍测距数据新鲜；
-        ③ 模式切换最迟 duration 内生效 (每次脉冲前检查模式)。
+        优化 (2026-07-25):
+          - 模式检查用 get_mode() (短锁)，不长时间持 _mode_lock
+          - motor.move/motor.stop 内部已有 motor._lock，无需外层再加 _mode_lock
+          - 减少 _mode_lock 持有时间，避免 /api/stop 阻塞
         """
-        with self._mode_lock:
-            if self._mode != "auto":
-                self.motor.stop()
-                return
-            self.motor.move(x=x, y=y, rotation=rotation)
+        # 模式检查 (短锁，不持锁期间 sleep)
+        if self.get_mode() != "auto":
+            self.motor.stop()
+            return
+        # motor.move 内部有 motor._lock (细粒度)，不与 _mode_lock 嵌套
+        self.motor.move(x=x, y=y, rotation=rotation)
         time.sleep(duration)
-        with self._mode_lock:
+        # 再次检查模式 (用户可能在脉冲期间按了停止)
+        if self.get_mode() == "auto":
             self.motor.stop()
 
     def _analyze_vision(self):

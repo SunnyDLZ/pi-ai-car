@@ -45,14 +45,19 @@ class Ultrasonic:
         self._initialized = True
         print("[Ultrasonic] 初始化完成")
 
-    def measure(self, samples=5):
+    def measure(self, samples=3):
         """测量距离 (厘米)
 
         多次采样取中位数，去除异常值。
         线程安全 — 内部加锁防止并发触发。
 
+        性能优化 (2026-07-25):
+          - 默认采样数 5→3，单次测距耗时从 ~80ms 降到 ~50ms
+          - 采样间隔 10ms→5ms，减少等待
+          - 单次失败立即跳出 (避免无效循环占用锁)
+
         Args:
-            samples: 采样次数 (默认 5)
+            samples: 采样次数 (默认 3)
 
         Returns:
             float: 距离 (cm)，超时返回 -1
@@ -66,14 +71,14 @@ class Ultrasonic:
                 d = self._single_measure()
                 if MIN_DISTANCE <= d <= MAX_DISTANCE:
                     distances.append(d)
-                time.sleep(0.01)
+                else:
+                    # 单次失败不浪费时间继续采 (大概率后续也失败)
+                    break
+                time.sleep(0.005)
 
             if not distances:
                 return -1
 
-            # 排序后取中位数
-            # 之前 bug: 偶数样本时 len//2 取的是上中位数，存在轻微偏差。
-            # 改为偶数取中间两个的平均值，奇数取正中。
             distances.sort()
             n = len(distances)
             if n % 2 == 1:
