@@ -22,7 +22,7 @@ Type=simple
 User=root
 WorkingDirectory=/home/pi/pi-ai-car
 # 启动小车前先开热点，停止后关热点 (手机直连传输控制更稳定)
-ExecStartPre=/bin/bash -c 'nmcli connection delete ai-car-hotspot 2>/dev/null; nmcli connection add type wifi ifname wlan0 con-name ai-car-hotspot autoconnect no ssid cai wifi-sec.key-mgmt wpa-psk wifi-sec.psk 13828287650 ipv4.method shared ipv6.method ignore && nmcli connection up ai-car-hotspot'
+ExecStartPre=/bin/bash -c 'nmcli connection delete ai-car-hotspot 2>/dev/null; nmcli connection add type wifi ifname wlan0 con-name ai-car-hotspot autoconnect no ssid car wifi-sec.key-mgmt wpa-psk wifi-sec.psk 13828287650 ipv4.method shared ipv6.method ignore && nmcli connection up ai-car-hotspot'
 ExecStart=/home/pi/pi-ai-car/.venv/bin/python3 main.py
 ExecStopPost=/bin/bash -c 'nmcli connection down ai-car-hotspot 2>/dev/null; nmcli connection delete ai-car-hotspot 2>/dev/null'
 # 崩溃自愈: 任何退出 (含 SIGSEGV) 3 秒后重启

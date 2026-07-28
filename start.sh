@@ -11,7 +11,7 @@ cd "$SCRIPT_DIR"
 # ========== 热点配置 ==========
 # 启动小车服务时同时开启树莓派热点，手机直连热点传输控制更稳定。
 # 关闭服务时同步关闭热点。
-HOTSPOT_SSID="cai"
+HOTSPOT_SSID="car"
 HOTSPOT_PASS="13828287650"
 HOTSPOT_CONN="ai-car-hotspot"   # nmcli 连接名 (固定，便于启停)
 
