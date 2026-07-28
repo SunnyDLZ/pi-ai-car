@@ -38,8 +38,13 @@ stop_hotspot() {
     echo "[热点] 热点已关闭"
 }
 
-# 确保退出时关闭热点 (Ctrl+C / 异常退出都会触发)
-trap stop_hotspot EXIT INT TERM
+# 确保脚本真正退出时关闭热点 (仅绑 EXIT，不绑 INT/TERM)。
+# 之前 bug: 绑 INT 后，用户在重启间隔 sleep 3 期间按 Ctrl+C 会触发 INT trap
+# 关闭热点，但 set +e 让脚本继续循环重启 main.py，热点却不重开 → 手机断连。
+# 现在只绑 EXIT: Ctrl+C 在 python3 main.py 期间退出 (rc=130) → break 循环
+# → 脚本退出 → EXIT trap 关热点。重启间隔的 sleep 被 Ctrl+C 中断后 set +e
+# 继续循环，热点保持开启 (不会误关)。
+trap stop_hotspot EXIT
 
 echo "🚗 AI 小车 - 启动中..."
 echo ""

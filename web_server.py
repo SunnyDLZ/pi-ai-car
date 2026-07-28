@@ -49,6 +49,7 @@ class WebServer:
         self._jpeg_running = False
         self._jpeg_last_update = 0.0   # JPEG 线程心跳时间 (watchdog 用)
         self._watchdog_thread = None   # 看门狗线程 (检测 JPEG 线程卡死并重启)
+        self._jpeg_generation = 0      # 线程代数 (重启后 +1，旧线程检测到自己过时则退出)
 
         self._register_routes()
 
@@ -288,14 +289,22 @@ class WebServer:
                 self._restart_jpeg_thread()
 
     def _restart_jpeg_thread(self):
-        """重启 JPEG 编码线程"""
-        # 标记停止并等待旧线程退出
-        self._jpeg_running = False
+        """重启 JPEG 编码线程
+
+        用 generation 计数器取代 _jpeg_running 标志来控制旧线程退出:
+        之前 bug: join(timeout=2.0) 超时后旧线程仍存活，_jpeg_running 被设回 True，
+        旧线程解卡后看到 True 继续跑 → 两个线程并发 capture/编码 → 画面闪烁 + CPU 翻倍。
+        现在: 重启时 generation+1，新线程持有新代数；旧线程每拍检查自己的代数
+        是否仍为当前代数，过时则退出 (即使 _jpeg_running=True)。
+        """
+        self._jpeg_generation += 1
+        my_gen = self._jpeg_generation
+        # 旧线程会在下一拍检测到代数不匹配自行退出，无需 join (它持锁时间短)
         if self._jpeg_thread and self._jpeg_thread.is_alive():
-            self._jpeg_thread.join(timeout=2.0)
-        # 重新启动
+            self._jpeg_thread.join(timeout=1.0)
         self._jpeg_running = True
-        self._jpeg_thread = threading.Thread(target=self._jpeg_encode_loop, daemon=True)
+        self._jpeg_thread = threading.Thread(
+            target=self._jpeg_encode_loop, args=(my_gen,), daemon=True)
         self._jpeg_thread.start()
 
     def _jpeg_encode_loop(self):
