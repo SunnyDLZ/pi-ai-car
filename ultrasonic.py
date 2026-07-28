@@ -56,6 +56,10 @@ class Ultrasonic:
           - 采样间隔 10ms→5ms，减少等待
           - 单次失败立即跳出 (避免无效循环占用锁)
 
+        修复 (2026-07-27): 连续测距失败时 ECHO 引脚可能被"锁住"在
+        异常电平状态 (前一次触发的回响未结束)。失败后先复位 TRIG
+        并等待 ECHO 回到 LOW 再重试，避免"一直返回-1"的死循环。
+
         Args:
             samples: 采样次数 (默认 3)
 
@@ -67,12 +71,17 @@ class Ultrasonic:
 
         with self._lock:
             distances = []
-            for _ in range(samples):
+            for i in range(samples):
                 d = self._single_measure()
                 if MIN_DISTANCE <= d <= MAX_DISTANCE:
                     distances.append(d)
                 else:
-                    # 单次失败不浪费时间继续采 (大概率后续也失败)
+                    # 测距失败 → 复位硬件状态避免 ECHO 锁死
+                    # (连续失败时 ECHO 可能停留在 HIGH，后续触发永远超时)
+                    self._reset_hardware()
+                    if i == 0:
+                        # 第一次失败后重试一次 (硬件复位往往能恢复)
+                        continue
                     break
                 time.sleep(0.005)
 
@@ -84,6 +93,24 @@ class Ultrasonic:
             if n % 2 == 1:
                 return distances[n // 2]
             return (distances[n // 2 - 1] + distances[n // 2]) / 2.0
+
+    def _reset_hardware(self):
+        """复位超声波硬件状态 (调用者必须已持有 self._lock)
+
+        ECHO 引脚在异常情况 (前次回响未结束/电气干扰) 下可能锁在 HIGH，
+        导致后续触发永远等不到"变高"或"变低"→ 持续返回 -1。
+        复位: TRIG 拉低 → 等 ECHO 回落 → 短暂延时让模块内部状态归零。
+        """
+        try:
+            GPIO.output(ULTRASONIC_TRIG, GPIO.LOW)
+            # 等 ECHO 回到 LOW (最多 5ms)
+            t0 = time.time()
+            while GPIO.input(ULTRASONIC_ECHO) == GPIO.HIGH:
+                if time.time() - t0 > 0.005:
+                    break
+            time.sleep(0.01)  # 模块内部状态恢复时间
+        except Exception:
+            pass
 
     def _single_measure(self):
         """单次测距"""

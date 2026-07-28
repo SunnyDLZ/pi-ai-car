@@ -157,18 +157,15 @@ class AICar:
           - manual: 手动遥控
           - auto:   超声波+视觉融合自动避障巡游
           - voice:  语音指令控制
-          - follow: 主人跟随 (需人脸识别就绪 + 主人库非空)
+          - follow: 跟随任意人 (需人脸检测器初始化，无需主人库)
         """
         if mode not in ("manual", "auto", "voice", "follow"):
             return
 
-        # follow 模式前置检查: 人脸识别未就绪则拒绝 (返回不切，WebServer 也会因前置检查不调用到这里)
-        if mode == "follow" and not self.face_recognizer.is_ready():
-            # 用 diagnose() 获取准确未就绪原因，避免固定说"请先录入主人"
-            # (实际原因可能是 dlib 未安装 / 模型缺失 / 主人库为空 / 主人未录入人脸)
-            diag = self.face_recognizer.diagnose()
-            print(f"[Main] 跟随模式不可用: {diag['reason']} - {diag['detail']}")
-            self.voice_out.say(f"跟随模式不可用: {diag['reason']}")
+        # follow 模式前置检查: 只需人脸检测器初始化 (dlib 安装即可，不再需要主人库)
+        if mode == "follow" and not getattr(self.face_recognizer, "_initialized", False):
+            print("[Main] 跟随模式不可用: 人脸检测器未初始化 (检查 dlib 安装)")
+            self.voice_out.say("跟随模式不可用，请检查 dlib 安装")
             return
 
         with self._mode_lock:
@@ -284,19 +281,20 @@ class AICar:
                 self.follower.set_distance(round(dist, 1) if dist > 0 else -1)
 
             if dist < 0:
-                # 单次失败不急停 — 斜面/软材质/波束外物体回波丢失是常态
+                # 测距失败处理:
+                # - 单次失败不急停 (斜面/软材质回波丢失是常态)，但也不能盲目前进
+                #   (之前 bug: 失败时 _auto_burst(y=80) 继续走 → 撞墙也不停)
+                # - 改为停车等待下一拍重新测距，连续失败则停车告警
                 measure_fail_streak += 1
+                if self.get_mode() == "auto":
+                    self.motor.stop()
                 if measure_fail_streak >= 3:
-                    # 用 get_mode() 替代持锁检查，避免与 /api/stop 争 _mode_lock
-                    if self.get_mode() == "auto":
-                        self.motor.stop()
                     print("[AutoPilot] 连续 3 次测距失败，已停车 (请检查传感器)")
                     measure_fail_streak = 0
                     time.sleep(0.3)
                 else:
-                    # 数据不可信时慢速短脉冲试探，下一拍重新测
-                    self.motor.set_speed(AUTO_DEFAULT_SPEED)
-                    self._auto_burst(y=80, duration=BURST_FORWARD)
+                    # 短暂等待后重测 (给 ECHO 引脚恢复时间)
+                    time.sleep(0.15)
                 continue
             measure_fail_streak = 0
 

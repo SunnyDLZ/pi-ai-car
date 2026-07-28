@@ -47,6 +47,8 @@ class WebServer:
         self._jpeg_lock = threading.Lock()
         self._jpeg_thread = None
         self._jpeg_running = False
+        self._jpeg_last_update = 0.0   # JPEG 线程心跳时间 (watchdog 用)
+        self._watchdog_thread = None   # 看门狗线程 (检测 JPEG 线程卡死并重启)
 
         self._register_routes()
 
@@ -148,15 +150,12 @@ class WebServer:
             data = request.get_json(silent=True) or {}
             mode = data.get("mode", "manual")
             if mode in ("manual", "auto", "voice", "follow"):
-                # follow 前置检查: 与 AICar.set_mode 一致，避免 WebServer._mode 已改但 AICar 拒绝导致状态不一致
-                # 失败时返回 diagnose() 的具体原因，让用户知道该装 dlib / 下模型 / 录入主人
-                if mode == "follow" and self._face_recognizer and not self._face_recognizer.is_ready():
-                    diag = self._face_recognizer.diagnose()
+                # follow 前置检查: 只需人脸检测器初始化 (不再需要主人库)
+                if mode == "follow" and self._face_recognizer and \
+                        not getattr(self._face_recognizer, "_initialized", False):
                     return jsonify({
                         "status": "error",
-                        "msg": f"人脸识别未就绪: {diag['reason']}",
-                        "detail": diag.get("detail", ""),
-                        "diagnosis": diag,
+                        "msg": "人脸检测器未初始化 (检查 dlib 安装)",
                     }), 400
                 # 不直接设 self._mode；交给 AICar.set_mode 处理，它会回调 self.set_mode 同步
                 # 这样保证 WebServer._mode 和 AICar._mode 永远一致
@@ -193,102 +192,25 @@ class WebServer:
                 "mode": self._mode,
                 "distance": dist,
                 "speed": self._motor.get_speed(),
-                "face_ready": self._face_recognizer.is_ready() if self._face_recognizer else False,
+                "face_ready": getattr(self._face_recognizer, "_initialized", False) if self._face_recognizer else False,
             }
             if self._follower:
                 status["follow_state"] = self._follower.get_state()
             return jsonify(status)
 
-        # ========== 主人管理 API ==========
+        # ========== 人脸检测诊断 (跟随模式用，不再有主人管理) ==========
 
         @app.route("/api/face/diagnose")
         def face_diagnose():
-            """诊断人脸识别就绪状态，返回具体未就绪原因"""
+            """诊断人脸检测就绪状态"""
             if not self._face_recognizer:
                 return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
-            return jsonify({"status": "ok", "diagnosis": self._face_recognizer.diagnose()})
-
-        @app.route("/api/owner/list")
-        def owner_list():
-            if not self._face_recognizer:
-                return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
+            ready = getattr(self._face_recognizer, "_initialized", False)
             return jsonify({
                 "status": "ok",
-                "owners": self._face_recognizer.list_owners(),
-                "ready": self._face_recognizer.is_ready(),
+                "ready": ready,
+                "reason": "就绪" if ready else "未初始化 (检查 dlib 安装)",
             })
-
-        @app.route("/api/owner/register", methods=["POST"])
-        def owner_register():
-            if not self._face_recognizer:
-                return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
-            data = request.get_json(silent=True) or {}
-            name = (data.get("name") or "").strip()
-            if not name:
-                return jsonify({"status": "error", "msg": "名字不能为空"}), 400
-            owner_id = self._face_recognizer.register_owner(name)
-            if owner_id == "exists":
-                return jsonify({"status": "exists", "msg": f"主人 '{name}' 已存在"}), 409
-            if owner_id:
-                return jsonify({"status": "ok", "owner_id": owner_id, "name": name})
-            return jsonify({"status": "error", "msg": "注册失败"}), 500
-
-        @app.route("/api/owner/capture", methods=["POST"])
-        def owner_capture():
-            """采集当前帧的人脸 embedding 到指定主人"""
-            if not self._face_recognizer:
-                return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
-            # 采集只检查模型就绪 (_initialized)，不要求已有 owner/embedding
-            # (is_ready 要求已有 embedding，新注册的主人 embeds=[] 过不了)
-            if not self._face_recognizer._initialized:
-                return jsonify({"status": "error", "msg": "人脸识别未初始化 (检查 dlib 安装/模型文件)"}), 503
-            data = request.get_json(silent=True) or {}
-            owner_id = data.get("owner_id")
-            if not owner_id:
-                return jsonify({"status": "error", "msg": "缺少 owner_id"}), 400
-            frame = self._get_current_frame()
-            if frame is None:
-                return jsonify({"status": "error", "msg": "摄像头未就绪"}), 503
-            result = self._face_recognizer.capture_and_save_embedding(owner_id, frame)
-            if result["ok"]:
-                return jsonify({"status": "ok", "msg": result["msg"]})
-            # 审查 bug: 之前统一返回 400，应区分 503/404/400/500
-            msg = result["msg"]
-            if "未初始化" in msg:
-                code = 503
-            elif "未找到主人" in msg:
-                code = 404
-            elif "保存失败" in msg:
-                code = 500
-            else:
-                code = 400
-            return jsonify({"status": "error", "msg": msg}), code
-
-        @app.route("/api/owner/delete", methods=["POST"])
-        def owner_delete():
-            if not self._face_recognizer:
-                return jsonify({"status": "error", "msg": "人脸识别模块未加载"}), 503
-            data = request.get_json(silent=True) or {}
-            owner_id = data.get("owner_id")
-            if not owner_id:
-                return jsonify({"status": "error", "msg": "缺少 owner_id"}), 400
-            # 如果正在 follow 被删除的主人，先切回 manual 避免车误报"主人走丢了"
-            if self._follower:
-                st = self._follower.get_state()
-                if st.get("following") and st.get("target_name"):
-                    # 找到要删除的主人名字
-                    owners = self._face_recognizer.list_owners()
-                    del_name = next((o["name"] for o in owners if o["id"] == owner_id), None)
-                    if del_name and st.get("target_name") == del_name:
-                        if self._on_mode_change:
-                            self._on_mode_change("manual")
-                        else:
-                            self._mode = "manual"
-            ok = self._face_recognizer.delete_owner(owner_id)
-            # 审查 bug: 之前删除失败仍返回 HTTP 200，前端无反馈
-            if ok:
-                return jsonify({"status": "ok"})
-            return jsonify({"status": "error", "msg": "删除失败 (主人不存在或文件系统错误)"}), 404
 
         @app.route("/api/follow_state")
         def follow_state():
@@ -342,8 +264,39 @@ class WebServer:
         self._jpeg_running = True
         self._jpeg_thread = threading.Thread(target=self._jpeg_encode_loop, daemon=True)
         self._jpeg_thread.start()
+        # 启动看门狗线程 (检测 JPEG 线程卡死并重启)
+        self._watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
+        self._watchdog_thread.start()
         print(f"[WebServer] 控制面板: http://{WEB_HOST}:{WEB_PORT}/")
         print(f"[WebServer] 在局域网其他设备上访问: http://<树莓派IP>:{WEB_PORT}/")
+
+    def _watchdog_loop(self):
+        """看门狗 — 检测 JPEG 编码线程卡死并重启
+
+        JPEG 线程在异常 (picamera2 死锁 / cv2 卡死) 下可能停止更新帧，
+        导致所有连接看到最后一帧静止画面 (用户反馈"画面卡死不变换")。
+        看门狗每 3s 检查一次心跳，超过 5s 未更新则重启 JPEG 线程。
+        """
+        while self._jpeg_running:
+            time.sleep(3.0)
+            now = time.time()
+            with self._jpeg_lock:
+                last = self._jpeg_last_update
+            # 心跳超 5s 未更新 → JPEG 线程可能卡死
+            if last > 0 and (now - last) > 5.0:
+                print(f"[WebServer] JPEG 线程心跳超时 ({now-last:.1f}s)，重启")
+                self._restart_jpeg_thread()
+
+    def _restart_jpeg_thread(self):
+        """重启 JPEG 编码线程"""
+        # 标记停止并等待旧线程退出
+        self._jpeg_running = False
+        if self._jpeg_thread and self._jpeg_thread.is_alive():
+            self._jpeg_thread.join(timeout=2.0)
+        # 重新启动
+        self._jpeg_running = True
+        self._jpeg_thread = threading.Thread(target=self._jpeg_encode_loop, daemon=True)
+        self._jpeg_thread.start()
 
     def _jpeg_encode_loop(self):
         """后台 JPEG 编码线程 — 单一编码器，所有视频连接复用
@@ -374,7 +327,7 @@ class WebServer:
                             except Exception:
                                 pass
                         elif self._mode == "follow":
-                            if self._face_recognizer and self._face_recognizer.is_ready():
+                            if self._face_recognizer and getattr(self._face_recognizer, "_initialized", False):
                                 st = self._follower.get_state() if self._follower else {}
                                 faces = st.get("last_faces") or []
                                 ids = st.get("last_ids") or []
@@ -392,6 +345,7 @@ class WebServer:
                                            [cv2.IMWRITE_JPEG_QUALITY, 70])
                     with self._jpeg_lock:
                         self._latest_jpeg = jpeg.tobytes()
+                        self._jpeg_last_update = time.time()
                 else:
                     if _blank_jpeg is None:
                         blank = np.zeros((240, 320, 3), dtype=np.uint8)
@@ -399,8 +353,12 @@ class WebServer:
                     with self._jpeg_lock:
                         if self._latest_jpeg is None:
                             self._latest_jpeg = _blank_jpeg.tobytes()
+                        self._jpeg_last_update = time.time()
             except Exception as e:
                 print(f"[WebServer] JPEG 编码异常: {e}")
+                # 异常时也更新心跳，避免看门狗误判重启 (异常是瞬时的)
+                with self._jpeg_lock:
+                    self._jpeg_last_update = time.time()
 
             # ~10 FPS 编码 (省 CPU，肉眼流畅)
             time.sleep(0.1)
@@ -819,13 +777,9 @@ html, body {
 
     <div class="divider"></div>
 
-    <!-- 注册/管理按钮 + 云台 (水平排列: 按钮列在左, 云台在右) -->
+    <!-- 云台控制 -->
     <div class="section-label">云台控制</div>
     <div style="display:flex;align-items:center;justify-content:center;gap:8px;">
-      <div class="owner-action-col">
-        <button class="owner-action-btn" ontouchend="event.preventDefault();openRegisterModal()" onclick="openRegisterModal()">注册</button>
-        <button class="owner-action-btn" ontouchend="event.preventDefault();openManageModal()" onclick="openManageModal()">管理</button>
-      </div>
       <div class="gimbal-grid">
       <div></div>
       <button ontouchstart="gimbalTilt(-10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(-10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↑</button>
@@ -837,7 +791,7 @@ html, body {
       <button ontouchstart="gimbalTilt(10,this)" ontouchend="gimbalRelease(this)" onmousedown="gimbalTilt(10,this)" onmouseup="gimbalRelease(this)" onmouseleave="gimbalRelease(this)">↓</button>
       <div></div>
     </div>
-    </div><!-- /注册管理按钮+云台 flex -->
+    </div><!-- /云台 flex -->
 
     <div class="divider"></div>
 
@@ -855,29 +809,6 @@ html, body {
 
   </div>
   </div><!-- /main-body -->
-</div>
-
-<!-- ===== 注册主人弹窗 ===== -->
-<div class="modal-overlay" id="registerModal">
-  <div class="modal-box">
-    <div class="modal-title">注册新主人</div>
-    <input type="text" id="modalOwnerName" class="modal-input" placeholder="请输入主人名字">
-    <div class="modal-btn-row">
-      <button class="modal-btn modal-btn-secondary" ontouchend="event.preventDefault();closeModal('registerModal')" onclick="closeModal('registerModal')">取消</button>
-      <button class="modal-btn modal-btn-primary" ontouchend="event.preventDefault();registerOwner()" onclick="registerOwner()">注册</button>
-    </div>
-  </div>
-</div>
-
-<!-- ===== 管理主人弹窗 ===== -->
-<div class="modal-overlay" id="manageModal">
-  <div class="modal-box">
-    <div class="modal-title">主人管理</div>
-    <div id="modalOwnerList" class="modal-owner-list"></div>
-    <div class="modal-btn-row">
-      <button class="modal-btn modal-btn-secondary" ontouchend="event.preventDefault();closeModal('manageModal')" onclick="closeModal('manageModal')">关闭</button>
-    </div>
-  </div>
 </div>
 
 <script>
@@ -1143,120 +1074,17 @@ async function syncMode() {
 }
 setInterval(syncMode, 2000);
 
-// ===== 主人管理 (弹窗) =====
-function openRegisterModal() {
-  document.getElementById('modalOwnerName').value = '';
-  document.getElementById('registerModal').classList.add('show');
-  setTimeout(() => document.getElementById('modalOwnerName').focus(), 100);
-}
-function openManageModal() {
-  document.getElementById('manageModal').classList.add('show');
-  refreshOwners();
-}
-function closeModal(id) {
-  document.getElementById(id).classList.remove('show');
-}
-// 点击弹窗背景关闭
-document.addEventListener('DOMContentLoaded', function() {
-  document.querySelectorAll('.modal-overlay').forEach(ov => {
-    ov.addEventListener('click', function(e) {
-      if (e.target === this) this.classList.remove('show');
-    });
-  });
-});
-
-async function refreshOwners() {
+// ===== 人脸检测状态 (跟随模式依赖，不再有主人管理) =====
+async function refreshFaceStatus() {
   try {
-    const r = await fetch('/api/owner/list');
+    const r = await fetch('/api/face/diagnose');
     const d = await r.json();
     const statusEl = document.getElementById('faceStatus');
     if (statusEl) {
-      statusEl.textContent = d.ready ? `(已就绪, ${d.owners.length}人)` : '(未就绪)';
+      statusEl.textContent = d.ready ? '(检测器就绪)' : '(未就绪)';
       statusEl.style.color = d.ready ? '#00e676' : '#999';
     }
-    const listEl = document.getElementById('modalOwnerList');
-    if (!listEl) return;
-    // 用 DOM API 构造元素，避免 innerHTML 字符串拼接的 XSS 风险
-    listEl.innerHTML = '';
-    if (!d.owners || d.owners.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'modal-empty';
-      empty.textContent = '尚未录入主人';
-      listEl.appendChild(empty);
-      return;
-    }
-    d.owners.forEach(o => {
-      const div = document.createElement('div');
-      div.className = 'modal-owner-item';
-      const span = document.createElement('span');
-      span.className = 'modal-owner-name';
-      span.textContent = o.name + ' ';
-      const small = document.createElement('small');
-      small.textContent = `(${o.samples}样本)`;
-      span.appendChild(small);
-      const capBtn = document.createElement('button');
-      capBtn.className = 'modal-owner-capture';
-      capBtn.textContent = '采集';
-      capBtn.addEventListener('click', () => captureOwner(o.id, o.name));
-      const delBtn = document.createElement('button');
-      delBtn.className = 'modal-owner-del';
-      delBtn.textContent = '删除';
-      delBtn.addEventListener('click', () => deleteOwner(o.id));
-      div.append(span, capBtn, delBtn);
-      listEl.appendChild(div);
-    });
   } catch(e) {}
-}
-
-async function registerOwner() {
-  const input = document.getElementById('modalOwnerName');
-  const name = (input.value || '').trim();
-  if (!name) { alert('请输入名字'); return; }
-  try {
-    const r = await fetch('/api/owner/register', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({name})
-    });
-    const d = await r.json();
-    if (d.status === 'ok') {
-      input.value = '';
-      closeModal('registerModal');
-      await refreshOwners();
-      alert(`已注册 "${name}"，请点"管理"打开列表，站到摄像头前点"采集"3次`);
-    } else {
-      alert('注册失败: ' + (d.msg || ''));
-    }
-  } catch(e) { alert('网络错误'); }
-}
-
-async function captureOwner(ownerId, ownerName) {
-  try {
-    const r = await fetch('/api/owner/capture', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({owner_id: ownerId})
-    });
-    const d = await r.json();
-    if (d.status === 'ok') {
-      await refreshOwners();
-    } else {
-      alert(d.msg || '采集失败');
-    }
-  } catch(e) { alert('网络错误'); }
-}
-
-async function deleteOwner(ownerId) {
-  if (!confirm('确定删除该主人?')) return;
-  try {
-    const r = await fetch('/api/owner/delete', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({owner_id: ownerId})
-    });
-    const d = await r.json();
-    if (d.status !== 'ok') {
-      alert(d.msg || '删除失败');
-    }
-    await refreshOwners();
-  } catch(e) { alert('网络错误'); }
 }
 
 // 跟随状态轮询
@@ -1274,8 +1102,8 @@ async function updateFollowState() {
 }
 
 // 初始化 + 定期刷新
-refreshOwners();
-setInterval(refreshOwners, 10000);   // 主人列表 10s 刷新一次 (低频，省 CPU)
+refreshFaceStatus();
+setInterval(refreshFaceStatus, 10000);   // 人脸检测状态 10s 刷新 (低频，省 CPU)
 setInterval(updateFollowState, 1000); // 跟随状态 1s 刷新 (从 500ms 降到 1s)
 
 // ===== 防止缩放/双击 =====
