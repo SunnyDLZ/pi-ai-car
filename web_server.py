@@ -40,6 +40,14 @@ class WebServer:
         self._latest_detections = []
         self._frame_lock = threading.Lock()
 
+        # 共享 JPEG 编码 — 单一后台线程编码帧，所有 /video_feed 连接复用同一帧
+        # 修复黑屏: 之前每个连接独立 cv2.imencode，浏览器重连后旧生成器线程
+        # 不退出，CPU 累加饱和 → 所有视频流卡死 → 黑屏
+        self._latest_jpeg = None       # 最新的 JPEG bytes (所有连接共享)
+        self._jpeg_lock = threading.Lock()
+        self._jpeg_thread = None
+        self._jpeg_running = False
+
         self._register_routes()
 
     def set_mode(self, mode):
@@ -302,28 +310,62 @@ class WebServer:
         return None
 
     def _generate_frames(self):
-        import cv2
-        # 视频流优化 (2026-07-25):
-        #   - 帧来源改为 camera.capture() (零阻塞读缓存，不再调 capture_array)
-        #   - 推流降到 ~10 FPS (Pi 上 8-12 FPS 已足够)，每帧间隔 100ms
-        #   - 重计算 (MobileNet/dlib) 完全不在视频流线程跑，
-        #     由 follower 线程持续检测并写 state，视频流只读 state 画框
-        #   - JPEG 编码用较低质量 (70) 减小体积，降低带宽 + 编码 CPU
-        #   - 帧拷贝用 .copy() 仅在需要画框时做，纯直出零拷贝
-        _overlay_counter = 0
-        _blank_jpeg = None  # 缓存空帧 JPEG，避免每次重新编码
+        """视频流生成器 — 直接 yield 共享 JPEG bytes (零编码开销)
+
+        所有 /video_feed 连接复用 _jpeg_encode_loop 编码的同一帧 JPEG。
+        即使有 N 个旧连接 (浏览器重连残留)，也只读缓存不编码，CPU 开销趋近于零。
+        """
         while True:
+            with self._jpeg_lock:
+                jpeg = self._latest_jpeg
+            if jpeg is not None:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' +
+                       jpeg + b'\r\n')
+            else:
+                # JPEG 编码线程尚未产出第一帧 → 等待
+                time.sleep(0.1)
+            # ~10 FPS 推流 (与编码线程频率匹配)
+            time.sleep(0.1)
+
+    def start(self):
+        # 审查 bug: 之前 threaded 参数从未使用，签名误导。删除它。
+        # Flask app.run 默认 threaded=True 已足够处理并发请求。
+        threading.Thread(
+            target=lambda: self._app.run(
+                host=WEB_HOST, port=WEB_PORT,
+                debug=False, use_reloader=False
+            ),
+            daemon=True
+        ).start()
+        # 启动共享 JPEG 编码线程 (单一编码器，所有 /video_feed 连接复用)
+        self._jpeg_running = True
+        self._jpeg_thread = threading.Thread(target=self._jpeg_encode_loop, daemon=True)
+        self._jpeg_thread.start()
+        print(f"[WebServer] 控制面板: http://{WEB_HOST}:{WEB_PORT}/")
+        print(f"[WebServer] 在局域网其他设备上访问: http://<树莓派IP>:{WEB_PORT}/")
+
+    def _jpeg_encode_loop(self):
+        """后台 JPEG 编码线程 — 单一编码器，所有视频连接复用
+
+        修复黑屏根因: 之前每个 /video_feed 连接独立运行 cv2.imencode，
+        浏览器重连后旧生成器线程不退出 (Flask 检测不到客户端断开)，
+        N 个旧连接 = N 路 imencode 叠加 → CPU 饱和 → 新连接拿不到帧 → 黑屏。
+        改为单线程编码 + 共享 bytes 后，旧连接 yield 缓存几乎零 CPU。
+        """
+        import cv2
+        _overlay_counter = 0
+        _blank_jpeg = None  # 缓存空帧 JPEG
+
+        while self._jpeg_running:
             try:
                 frame = self._get_current_frame()
                 if frame is not None:
                     _overlay_counter += 1
-                    # 每 5 帧才画叠加 (画框是轻量操作，但仍降频省 CPU)
                     do_overlay = (_overlay_counter % 5 == 0)
 
                     if do_overlay:
-                        # 仅画框时拷贝一帧，避免修改原始帧缓存影响其他消费者
                         frame = frame.copy()
-
                         if self._mode == "auto" and self._vision_obs:
                             try:
                                 analysis = self._vision_obs.analyze(frame)
@@ -345,49 +387,29 @@ class WebServer:
                                 cv2.putText(frame, "Face recognizer not ready",
                                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                                             0.7, (255, 0, 0), 2)
-                        # manual 模式不画任何叠加 (最省 CPU)
 
-                    # JPEG 编码 (质量 70，体积小，编码快)
                     _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
                                            [cv2.IMWRITE_JPEG_QUALITY, 70])
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' +
-                           jpeg.tobytes() + b'\r\n')
+                    with self._jpeg_lock:
+                        self._latest_jpeg = jpeg.tobytes()
                 else:
-                    # 帧未就绪 → 输出缓存的空帧 (避免每次重新编码)
                     if _blank_jpeg is None:
                         blank = np.zeros((240, 320, 3), dtype=np.uint8)
                         _, _blank_jpeg = cv2.imencode('.jpg', blank)
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' +
-                           _blank_jpeg.tobytes() + b'\r\n')
+                    with self._jpeg_lock:
+                        if self._latest_jpeg is None:
+                            self._latest_jpeg = _blank_jpeg.tobytes()
             except Exception as e:
-                print(f"[WebServer] _generate_frames 异常: {e}")
-                try:
-                    if _blank_jpeg is None:
-                        blank = np.zeros((240, 320, 3), dtype=np.uint8)
-                        _, _blank_jpeg = cv2.imencode('.jpg', blank)
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' +
-                           _blank_jpeg.tobytes() + b'\r\n')
-                except Exception:
-                    pass
+                print(f"[WebServer] JPEG 编码异常: {e}")
 
-            # ~10 FPS 推流: 省 CPU 保控制/模式切换接口响应速度
+            # ~10 FPS 编码 (省 CPU，肉眼流畅)
             time.sleep(0.1)
 
-    def start(self):
-        # 审查 bug: 之前 threaded 参数从未使用，签名误导。删除它。
-        # Flask app.run 默认 threaded=True 已足够处理并发请求。
-        threading.Thread(
-            target=lambda: self._app.run(
-                host=WEB_HOST, port=WEB_PORT,
-                debug=False, use_reloader=False
-            ),
-            daemon=True
-        ).start()
-        print(f"[WebServer] 控制面板: http://{WEB_HOST}:{WEB_PORT}/")
-        print(f"[WebServer] 在局域网其他设备上访问: http://<树莓派IP>:{WEB_PORT}/")
+    def stop_jpeg_thread(self):
+        """停止 JPEG 编码线程"""
+        self._jpeg_running = False
+        if self._jpeg_thread and self._jpeg_thread.is_alive():
+            self._jpeg_thread.join(timeout=1.0)
 
 
 # ============================================================
@@ -881,6 +903,17 @@ function reconnectVideo() {
     _videoReconnectTimer = null;
   }, 1000);
 }
+
+// 页面切到后台再切回时 MJPEG 流会断开 (浏览器暂停后台连接)，
+// onerror 不触发 (初始连接已成功)，需要 visibilitychange 主动重连。
+// 这是"切后台/锁屏再回来画面黑屏"的根因。
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    // 页面重新可见 → 强制重连视频流
+    const img = document.getElementById('cameraFeed');
+    if (img) img.src = '/video_feed?t=' + Date.now();
+  }
+});
 
 // 防触摸+鼠标双触发 (ontouchend+onclick / ontouchstart+onmousedown):
 // 部分移动浏览器 touch 事件后仍会合成 click/mouse 事件，导致：

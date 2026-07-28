@@ -264,8 +264,8 @@ class AICar:
         # 速度渐变步长 (每拍调整 ±2%，避免突变导致电机抖动/打滑)
         SPEED_STEP = 2
         BURST_FORWARD = 0.25        # 前进脉冲时长 (s) — 盲开窗口 ≤ ~8cm
-        BURST_TURN = 0.50           # 90° 转向脉冲
-        BURST_TURN_AROUND = 1.2     # 180° 原地掉头脉冲
+        BURST_TURN = 0.30           # ~90° 转向脉冲 (原 0.5s 转过头)
+        BURST_TURN_AROUND = 0.60    # ~180° 原地掉头脉冲 (原 1.2s 实际转了 360°)
         BURST_RETREAT = 0.30        # 后退脉冲 (太近时先退一点再找路)
 
         current_speed = AUTO_DEFAULT_SPEED  # 当前实际速度 (渐变到目标值)
@@ -338,8 +338,11 @@ class AICar:
                 elif turn_dir == "left":
                     self._auto_burst(rotation=-80, duration=BURST_TURN)
                 else:
-                    # 左右都没路 → 原地掉头
+                    # 左右都没路 → 原地掉头 (~180°，不是 360°)
                     self._auto_burst(rotation=80, duration=BURST_TURN_AROUND)
+                # 转向后立即前进试探 — 若转对了方向则走出障碍区，
+                # 若仍受阻则下一拍循环会重新测距找路 (不会原地打转)
+                self._auto_burst(y=80, duration=BURST_FORWARD)
                 # 找路后恢复默认速度
                 current_speed = AUTO_DEFAULT_SPEED
 
@@ -403,13 +406,14 @@ class AICar:
           - 超声波失败 → 只靠摄像头
 
         Args:
-            min_clear_dist: 判定畅通的最小距离 (cm)，默认 OBSTACLE_WARN(50cm)
+            min_clear_dist: 判定畅通的最小距离 (cm)，默认 OBSTACLE_SLOW(30cm)
+                            原 50cm 太严格，狭窄空间左右都判"没路"→ 总走 360° 掉头
 
         Returns:
             bool: True=有路, False=阻塞
         """
         if min_clear_dist is None:
-            min_clear_dist = float(OBSTACLE_WARN)
+            min_clear_dist = float(OBSTACLE_SLOW)
 
         # 超声波测距 (主) — 云台已转向目标方向，超声波同向测距
         dist = self.ultrasonic.measure(samples=3)

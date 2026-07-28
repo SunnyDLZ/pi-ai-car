@@ -155,6 +155,9 @@ FOLLOW_RETRY_INTERVAL = 1.0
 SERVO_PAN_MIN = 0     # 水平范围 (度)
 SERVO_PAN_MAX = 180
 SERVO_PAN_CENTER = 90
+# 水平舵机方向反转 — 物理安装方向与软件约定 (0=左, 180=右) 相反时设为 True
+# pan(angle) 内部会发送 180-angle 的脉宽，使物理转向与逻辑角度一致
+SERVO_PAN_INVERT = True
 
 SERVO_TILT_MIN = 0    # 俯仰范围 (度)
 SERVO_TILT_MAX = 180

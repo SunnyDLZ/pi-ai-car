@@ -8,7 +8,7 @@ SG90 参数: 50Hz, 0.5ms(0°) ~ 2.5ms(180°) 脉宽
 import time
 import pigpio
 from config import SERVO_PAN_PIN, SERVO_TILT_PIN, \
-    SERVO_PAN_MIN, SERVO_PAN_MAX, SERVO_PAN_CENTER, \
+    SERVO_PAN_MIN, SERVO_PAN_MAX, SERVO_PAN_CENTER, SERVO_PAN_INVERT, \
     SERVO_TILT_MIN, SERVO_TILT_MAX, SERVO_TILT_CENTER
 
 
@@ -72,15 +72,20 @@ class ServoGimbal:
         """设置水平角度 (度)
 
         Args:
-            angle: 0~180, 左~右
+            angle: 0~180, 左~右 (逻辑角度)
 
         Returns:
-            int: 实际设置的角度；未初始化时返回 None
+            int: 实际设置的逻辑角度；未初始化时返回 None
+
+        注意: 若 SERVO_PAN_INVERT=True (物理安装反向)，内部会发送 180-angle
+        的脉宽，使物理转向与逻辑角度一致。_pan_angle 存储逻辑角度。
         """
         if not self._initialized or not self._pi:
             return None
         angle = max(SERVO_PAN_MIN, min(SERVO_PAN_MAX, angle))
-        pulse = self._angle_to_pulse(angle)
+        # 物理安装反向时镜像角度 (逻辑 angle → 物理 180-angle)
+        physical_angle = (SERVO_PAN_MAX - angle) if SERVO_PAN_INVERT else angle
+        pulse = self._angle_to_pulse(physical_angle)
         self._pi.set_servo_pulsewidth(SERVO_PAN_PIN, pulse)
         self._pan_angle = angle
         return angle
