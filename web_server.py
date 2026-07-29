@@ -307,19 +307,30 @@ class WebServer:
             target=self._jpeg_encode_loop, args=(my_gen,), daemon=True)
         self._jpeg_thread.start()
 
-    def _jpeg_encode_loop(self):
+    def _jpeg_encode_loop(self, my_gen=0):
         """后台 JPEG 编码线程 — 单一编码器，所有视频连接复用
 
         修复黑屏根因: 之前每个 /video_feed 连接独立运行 cv2.imencode，
         浏览器重连后旧生成器线程不退出 (Flask 检测不到客户端断开)，
         N 个旧连接 = N 路 imencode 叠加 → CPU 饱和 → 新连接拿不到帧 → 黑屏。
         改为单线程编码 + 共享 bytes 后，旧连接 yield 缓存几乎零 CPU。
+
+        Args:
+            my_gen: 线程代数 (由 _restart_jpeg_thread 传入)。
+                初始线程 (start 调用，无 args) 默认 0，匹配 _jpeg_generation 初值。
+                每拍检查 my_gen == self._jpeg_generation，不匹配说明已被更新代重启，
+                自行退出 (即使 _jpeg_running=True)，避免旧线程解卡后与新线程并发编码。
         """
         import cv2
         _overlay_counter = 0
         _blank_jpeg = None  # 缓存空帧 JPEG
 
         while self._jpeg_running:
+            # 代数检查: _restart_jpeg_thread 会 +1 _jpeg_generation 并启动新线程。
+            # 旧线程发现自己代数过时则退出，避免与新线程并发 capture/编码导致
+            # 画面闪烁 + CPU 翻倍 (此前 join(timeout) 超时后旧线程仍存活的兜底)。
+            if my_gen != self._jpeg_generation:
+                return
             try:
                 frame = self._get_current_frame()
                 if frame is not None:
