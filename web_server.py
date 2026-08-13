@@ -10,7 +10,7 @@ import time
 import numpy as np
 from flask import Flask, Response, render_template_string, request, jsonify
 
-from config import WEB_HOST, WEB_PORT
+from config import WEB_HOST, WEB_PORT, VIDEO_JPEG_WIDTH, VIDEO_JPEG_QUALITY
 from motor import MotorController
 from servo import ServoGimbal
 
@@ -370,8 +370,17 @@ class WebServer:
                                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                                             0.7, (255, 0, 0), 2)
 
-                    _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
-                                           [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    # 编码前降采样: 树莓派软件编码，640x480 全分辨率编码 CPU 开销大
+                    # (手机端显示还会按容器缩放，无需全分辨率)。按 VIDEO_JPEG_WIDTH
+                    # 等比缩小后再 imencode，CPU 显著下降 (640→420 省 ~60%)。
+                    # 叠加框/文字已在全分辨率上画好，缩放后仍按比例显示，不影响观感。
+                    enc_frame = frame
+                    if VIDEO_JPEG_WIDTH > 0 and frame.shape[1] > VIDEO_JPEG_WIDTH:
+                        scale = VIDEO_JPEG_WIDTH / float(frame.shape[1])
+                        enc_frame = cv2.resize(
+                            frame, (VIDEO_JPEG_WIDTH, int(frame.shape[0] * scale)))
+                    _, jpeg = cv2.imencode('.jpg', cv2.cvtColor(enc_frame, cv2.COLOR_RGB2BGR),
+                                           [cv2.IMWRITE_JPEG_QUALITY, VIDEO_JPEG_QUALITY])
                     with self._jpeg_lock:
                         self._latest_jpeg = jpeg.tobytes()
                         self._jpeg_last_update = time.time()

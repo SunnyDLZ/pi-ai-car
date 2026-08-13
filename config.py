@@ -167,7 +167,11 @@ SERVO_TILT_CENTER = 90
 
 CSI_FRAME_WIDTH = 640
 CSI_FRAME_HEIGHT = 480
-CSI_FRAME_RATE = 30
+# 采集帧率 (fps)。后台采集线程持续 capture_array 写缓存，消费者频率:
+# JPEG 编码 10fps、跟随检测 ~6.6fps (DETECT_THROTTLE 150ms)、auto 视觉低频。
+# 30fps 时采集线程空跑大量帧无人消费，纯耗 CPU (树莓派软件路径)。
+# 降到 20fps 仍远高于所有消费者频率，CPU 下降 ~33%，不影响实时性。
+CSI_FRAME_RATE = 20
 # 摄像头物理倒装时画面需 180° 翻转 (上下+左右) 才能正向显示
 # True=倒装(翻转), False=正装(不翻转)
 CSI_FLIP_180 = True
@@ -176,6 +180,15 @@ CSI_FLIP_180 = True
 
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 2222
+
+# 视频流 JPEG 编码宽度 (px)。树莓派是软件编码 (cv2.imencode)，手机端显示
+# 还会按容器缩放，足够清晰即可。降采样能大幅降低 CPU: 640→420 约省 60%，
+# 640→320 约省 75%。编码前会把帧等比缩放到该宽度。
+# 0 = 不降采样 (保持原始分辨率)
+VIDEO_JPEG_WIDTH = 420
+
+# 视频流 JPEG 编码质量 (0-100，越低 CPU 越省、画面越糊)
+VIDEO_JPEG_QUALITY = 70
 
 # ========== AI 视觉 ==========
 
