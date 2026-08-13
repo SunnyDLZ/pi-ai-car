@@ -31,6 +31,7 @@ from config import (
     FOLLOW_SEARCH_TILTS,
     FOLLOW_RETRY_INTERVAL,
     SERVO_PAN_CENTER,
+    SERVO_PAN_INVERT,
 )
 
 
@@ -252,7 +253,15 @@ class Follower:
         if getattr(self.car.servo, "_initialized", False):
             try:
                 cur_pan, _ = self.car.servo.get_angles()
-                pan_err = cur_pan - SERVO_PAN_CENTER  # >0: 云台向右偏 → 人在右
+                # 审查 bug: get_angles() 返回逻辑角度，而 pan() 在 SERVO_PAN_INVERT=True
+                # 时发送 180-angle 的物理脉宽。因此"逻辑角度增大"在物理上对应摄像头
+                # 向左转。若直接 cur_pan - CENTER，pan_err 的符号与物理方向相反，
+                # 导致车身旋转方向错误 (目标在右却左转)。
+                # 修正: 按 INVERT 反转符号，使 pan_err>0 恒表示"云台物理偏右→目标在右"。
+                if SERVO_PAN_INVERT:
+                    pan_err = SERVO_PAN_CENTER - cur_pan
+                else:
+                    pan_err = cur_pan - SERVO_PAN_CENTER
             except Exception:
                 pan_err = 0
 
@@ -291,7 +300,12 @@ class Follower:
             return
         try:
             cur_pan, cur_tilt = self.car.servo.get_angles()
+            # 审查 bug: 与 _control 同理，SERVO_PAN_INVERT=True 时逻辑角度增大对应
+            # 物理向左。目标在右 (offset_x>0) 应让摄像头物理右转 → 逻辑 pan 需减小。
+            # 故按 INVERT 反转 pan_delta 符号，使云台追踪方向与物理一致。
             pan_delta = int(offset_x * 3)
+            if SERVO_PAN_INVERT:
+                pan_delta = -pan_delta
             new_pan = max(0, min(180, cur_pan + pan_delta))
 
             offset_y = (face_cy - frame_h / 2) / (frame_h / 2)  # -1~1
