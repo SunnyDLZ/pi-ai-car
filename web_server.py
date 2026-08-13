@@ -341,9 +341,18 @@ class WebServer:
                         frame = frame.copy()
                         if self._mode == "auto" and self._vision_obs:
                             try:
-                                analysis = self._vision_obs.analyze(frame)
+                                # 审查 bug: 之前直接在 640x480 全分辨率上跑
+                                # analyze() (Canny+形态学+findContours)，每帧 100~300ms，
+                                # 每 5 帧叠加一次 → CPU 持续饱和，饿死 Flask (切模式/按键
+                                # 没反应) + 视频卡死。与 main.py 的 _analyze_vision 一致，
+                                # 先降采样到 320x240 提速 ~4 倍，叠加结果再放大回原分辨率。
+                                import cv2 as _cv2
+                                small = _cv2.resize(frame, (320, 240))
+                                analysis = self._vision_obs.analyze(small)
                                 if analysis.get("ok"):
-                                    frame = self._vision_obs.draw_overlay(frame, analysis)
+                                    small_over = self._vision_obs.draw_overlay(small, analysis)
+                                    frame = _cv2.resize(
+                                        small_over, (frame.shape[1], frame.shape[0]))
                             except Exception:
                                 pass
                         elif self._mode == "follow":
